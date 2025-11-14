@@ -178,23 +178,26 @@ class ChatGPTBrowserController:
                     "https://chatgpt.com", wait_until=wait_until, timeout=timeout
                 )
                 # Wait for theme to be applied - check for dark mode class on html element
-                await self.page.wait_for_function(
-                    """() => {
-                        const html = document.querySelector('html');
-                        return html && (html.classList.contains('dark') || html.classList.contains('light'));
-                    }""",
-                    timeout=5000
-                )
+                try:
+                    await self.page.wait_for_function(
+                        """() => {
+                            const html = document.querySelector('html');
+                            return html && (html.classList.contains('dark') || html.classList.contains('light'));
+                        }""",
+                        timeout=2000  # Reduced from 5s to 2s
+                    )
+                except PlaywrightTimeout:
+                    logger.debug("Theme wait timeout, continuing anyway")
             else:
                 logger.info(f"Already on ChatGPT: {current_url}")
             
             # Ensure we're on the main chat interface, not the intro page
-            await asyncio.sleep(1)  # Brief wait for page to load
+            await asyncio.sleep(0.5)  # Brief wait for page to load (reduced from 1s)
             try:
                 # Check if we're on intro page by looking for "Introducing" text
                 page_title = await self.page.title()
                 current_url = self.page.url
-                
+
                 if "Introducing" in page_title or current_url == "https://chatgpt.com/" or "/discovery" in current_url:
                     logger.info("On intro/landing page, starting new chat...")
                     # Don't use /c/new directly as it may fail - use the new chat button instead
@@ -205,7 +208,7 @@ class ChatGPTBrowserController:
                             await ask_input.click()
                             await ask_input.fill("Hello")
                             await ask_input.press("Enter")
-                            await asyncio.sleep(3)
+                            await asyncio.sleep(1.5)  # Reduced from 3s to 1.5s
                             logger.info("Started chat via input field")
                         else:
                             # Method 2: Try the New chat button in sidebar
@@ -1087,75 +1090,84 @@ class ChatGPTBrowserController:
             return False
 
     async def _wait_for_response_impl(self, timeout: int) -> bool:
-        """Implementation of wait for response logic"""
-        # Strategy: Wait for response action buttons (copy, like, etc.) to appear
-        # These only show up when the response is complete
-        
-        # First check if "Stop generating" button exists (indicates active generation)
-        stop_button = self.page.locator('button:has-text("Stop generating")').first
-        generation_active = await stop_button.count() > 0 and await stop_button.is_visible()
-        
+        """Implementation of wait for response logic
+
+        Two-stage approach:
+        1. Wait for "Stop generating" button to disappear (if present)
+        2. Wait for action buttons panel to appear (Copy, thumbs up/down, etc.)
+        """
+        # Stage 1: Check for "Stop generating" button
+        stop_selectors = [
+            'button:has-text("Stop generating")',  # English
+            'button:has-text("Остановить генерацию")',  # Russian
+        ]
+
+        generation_active = False
+        active_selector = None
+
+        for selector in stop_selectors:
+            try:
+                stop_button = self.page.locator(selector).first
+                if await stop_button.count() > 0 and await stop_button.is_visible():
+                    generation_active = True
+                    active_selector = selector
+                    break
+            except Exception:
+                continue
+
         if generation_active:
-            logger.debug("Generation is active, waiting for it to complete...")
-            # Wait for the stop button to disappear
+            logger.debug(f"Generation active, waiting for Stop button to disappear...")
             try:
                 await self.page.wait_for_selector(
-                    'button:has-text("Stop generating")', 
-                    state="hidden", 
+                    active_selector,
+                    state="hidden",
                     timeout=timeout * 1000
                 )
-                logger.debug("Stop button disappeared, generation complete")
+                logger.debug("Stop button disappeared")
             except PlaywrightTimeout:
                 logger.warning(f"Timeout waiting for generation to complete after {timeout}s")
                 return False
-        else:
-            logger.debug("No active generation detected")
-        
-        # Now wait for response action buttons to appear - these indicate completion
-        # Updated selectors based on actual ChatGPT UI (Dec 2024)
-        completion_indicators = [
-            'article button[aria-label="Copy"]',  # Copy button in response
-            'article button[aria-label="Good response"]',  # Feedback button
-            'article button[aria-label="Bad response"]',  # Feedback button  
-            'article button[aria-label="Read aloud"]',  # Read aloud button
-            'button:has-text("Copy")',  # Alternative: button with text
-            'button:has-text("Good response")',  # Alternative: feedback
-            'article:last-child button:has(img)',  # Last article with button icons
-        ]
-        
-        # Wait for any completion indicator to appear
-        response_complete = False
-        for selector in completion_indicators:
+
+        # Stage 2: Wait for action buttons to appear in the LAST ASSISTANT message
+        # CRITICAL: We need to find the copy button in the last assistant's article,
+        # not in user messages which also have copy buttons
+
+        import time
+        stage2_start = time.time()
+        stage2_timeout = 10  # Max 10 seconds to find copy button after Stop button disappears
+
+        while time.time() - stage2_start < stage2_timeout:
             try:
-                element = self.page.locator(selector).first
-                # Quick check if already visible
-                if await element.count() > 0 and await element.is_visible():
-                    logger.debug(f"Response already complete, found: {selector}")
-                    response_complete = True
-                    break
-                    
-                # Wait for it to appear if not already visible
-                await self.page.wait_for_selector(selector, state="visible", timeout=5000)
-                logger.debug(f"Response complete, found indicator: {selector}")
-                response_complete = True
-                break
-            except PlaywrightTimeout:
-                continue
+                # Find the last assistant message using data-turn attribute (most reliable!)
+                # This attribute distinguishes user messages from assistant messages
+                assistant_articles = await self.page.locator('article[data-turn="assistant"]').all()
+
+                if not assistant_articles:
+                    logger.debug("No assistant messages found yet, waiting...")
+                    await asyncio.sleep(0.3)
+                    continue
+
+                # Get the last assistant message
+                last_assistant_article = assistant_articles[-1]
+
+                # Look for the copy button IN THIS SPECIFIC ARTICLE
+                # data-testid is the most reliable selector
+                copy_button = last_assistant_article.locator('button[data-testid="copy-turn-action-button"]').first
+
+                if await copy_button.count() > 0 and await copy_button.is_visible():
+                    logger.debug("Response complete - found copy button in last assistant message")
+                    return True
+
+                # Button not found yet, wait a bit and retry
+                await asyncio.sleep(0.3)
+
             except Exception as e:
-                logger.debug(f"Error checking {selector}: {e}")
+                logger.debug(f"Error in stage 2: {e}")
+                await asyncio.sleep(0.3)
                 continue
-        
-        if not response_complete:
-            logger.warning("Could not confirm response completion via action buttons")
-            # Fallback: wait a bit for any final rendering
-            await asyncio.sleep(1)
-        
-        # Final wait for network idle to ensure everything is loaded
-        try:
-            await self.page.wait_for_load_state("networkidle", timeout=3000)
-        except PlaywrightTimeout:
-            logger.debug("Network idle timeout, but continuing")
-        
+
+        # Timeout - assume complete anyway
+        logger.warning("Copy button not found after 10s, assuming response complete")
         return True
 
     async def get_last_response(self) -> str | None:
