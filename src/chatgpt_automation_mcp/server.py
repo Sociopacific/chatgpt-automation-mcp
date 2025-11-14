@@ -76,11 +76,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chatgpt_get_current_chat_id",
-            description="Get the chat ID of the currently open chat",
-            inputSchema={"type": "object", "properties": {}, "required": []},
-        ),
-        Tool(
             name="chatgpt_get_model",
             description="Get the currently selected model",
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -376,13 +371,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             project_name = arguments.get("project_name", "MCP-Automation")
             chat_id = await ctrl.new_chat(project_name=project_name)
             return [TextContent(type="text", text=f"New chat created: {chat_id}")]
-
-        elif name == "chatgpt_get_current_chat_id":
-            chat_id = await ctrl.get_current_chat_id()
-            if chat_id:
-                return [TextContent(type="text", text=f"Current chat ID: {chat_id}")]
-            else:
-                return [TextContent(type="text", text="Not currently in a chat")]
 
         elif name == "chatgpt_get_model":
             model = await ctrl.get_current_model()
