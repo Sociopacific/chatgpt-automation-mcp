@@ -54,18 +54,30 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_send_message",
-            description="Send a message to ChatGPT",
+            description="Send a message to ChatGPT in a specific chat",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "message": {"type": "string", "description": "The message to send to ChatGPT"}
+                    "message": {"type": "string", "description": "The message to send to ChatGPT"},
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to send the message to (prevents sending to wrong chats)"}
                 },
-                "required": ["message"],
+                "required": ["message", "chat_id"],
             },
         ),
         Tool(
             name="chatgpt_new_chat",
-            description="Start a new chat conversation",
+            description="Start a new chat conversation and return its chat ID",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_name": {"type": "string", "description": "Name of the project to create chat in (default: MCP-Automation)"}
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="chatgpt_get_current_chat_id",
+            description="Get the chat ID of the currently open chat",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         Tool(
@@ -138,18 +150,19 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_send_and_get_response",
-            description="Send a message to ChatGPT and wait for the complete response. Automatically enables web search for messages containing research keywords (latest, current, recent, update, search, etc.)",
+            description="Send a message to ChatGPT in a specific chat and wait for the complete response. Automatically enables web search for messages containing research keywords (latest, current, recent, update, search, etc.)",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "message": {"type": "string", "description": "The message to send to ChatGPT"},
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to send the message to (prevents sending to wrong chats)"},
                     "timeout": {
                         "type": "integer",
                         "description": "Maximum time to wait for response in seconds (default 120s for thinking models)",
                         "default": 120,
                     },
                 },
-                "required": ["message"],
+                "required": ["message", "chat_id"],
             },
         ),
         Tool(
@@ -355,12 +368,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         elif name == "chatgpt_send_message":
             message = arguments["message"]
-            result = await ctrl.send_message(message)
+            chat_id = arguments["chat_id"]
+            result = await ctrl.send_message(message, chat_id=chat_id)
             return [TextContent(type="text", text=result)]
 
         elif name == "chatgpt_new_chat":
-            result = await ctrl.new_chat()
-            return [TextContent(type="text", text=result)]
+            project_name = arguments.get("project_name", "MCP-Automation")
+            chat_id = await ctrl.new_chat(project_name=project_name)
+            return [TextContent(type="text", text=f"New chat created: {chat_id}")]
+
+        elif name == "chatgpt_get_current_chat_id":
+            chat_id = await ctrl.get_current_chat_id()
+            if chat_id:
+                return [TextContent(type="text", text=f"Current chat ID: {chat_id}")]
+            else:
+                return [TextContent(type="text", text="Not currently in a chat")]
 
         elif name == "chatgpt_get_model":
             model = await ctrl.get_current_model()
@@ -392,24 +414,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         elif name == "chatgpt_send_and_get_response":
             message = arguments["message"]
-            
+            chat_id = arguments["chat_id"]
+
             # Get current model to determine appropriate timeout
             current_model = await ctrl.get_current_model()
-            
+
             # Check if Deep Research or other special mode is active
             # (You could enhance this by tracking the current mode)
             mode = None
             if "research" in message.lower() or "deep research" in message.lower():
                 mode = "deep_research"
-            
+
             # Use provided timeout or calculate based on model/mode
             default_timeout = get_default_timeout(model=current_model, mode=mode)
             timeout = arguments.get("timeout", default_timeout)
-            
+
             # Log the timeout being used
             logger.info(f"Using timeout of {format_timeout_for_display(timeout)} for model {current_model or 'unknown'}")
 
-            response = await ctrl.send_and_get_response(message, timeout)
+            response = await ctrl.send_and_get_response(message, chat_id=chat_id, timeout=timeout)
 
             if response:
                 return [TextContent(type="text", text=response)]

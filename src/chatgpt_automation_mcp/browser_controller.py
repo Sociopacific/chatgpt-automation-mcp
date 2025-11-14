@@ -927,6 +927,53 @@ class ChatGPTBrowserController:
             logger.error(f"Error navigating to project: {e}")
             return False
 
+    async def get_current_chat_id(self) -> str | None:
+        """Get the chat ID from current URL
+
+        Returns:
+            Chat ID (e.g. "69172438-9834-8333-87ed-547cc8723b7c") or None if not in a chat
+        """
+        if not self.page:
+            return None
+
+        url = self.page.url
+        # Chat URLs look like: https://chatgpt.com/c/{chat_id}
+        if "/c/" in url:
+            chat_id = url.split("/c/")[1].split("/")[0].split("?")[0]
+            return chat_id
+        return None
+
+    async def navigate_to_chat(self, chat_id: str) -> bool:
+        """Navigate to a specific chat by ID
+
+        Args:
+            chat_id: The chat ID to navigate to
+
+        Returns:
+            True if navigation successful, False otherwise
+        """
+        if not self.page:
+            await self.launch()
+
+        try:
+            chat_url = f"https://chatgpt.com/c/{chat_id}"
+            logger.info(f"Navigating to chat: {chat_id}")
+            await self.page.goto(chat_url, wait_until="domcontentloaded")
+            await asyncio.sleep(1)  # Wait for UI to settle
+
+            # Verify we're on the right chat
+            current_id = await self.get_current_chat_id()
+            if current_id == chat_id:
+                logger.info(f"Successfully navigated to chat: {chat_id}")
+                return True
+            else:
+                logger.error(f"Navigation failed. Expected {chat_id}, got {current_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to navigate to chat {chat_id}: {e}")
+            return False
+
     async def new_chat(self, project_name: str = "MCP-Automation") -> str:
         """
         Start a new chat conversation in a project with error recovery
@@ -963,6 +1010,9 @@ class ChatGPTBrowserController:
 
         Args:
             project_name: Name of project to create chat in
+
+        Returns:
+            Chat ID of the newly created chat
         """
         logger.info(f"Creating new chat in project: {project_name}")
 
@@ -980,23 +1030,38 @@ class ChatGPTBrowserController:
 
         # We're now in the project, the input field should be ready
         # Just wait a moment for UI to settle
-        await asyncio.sleep(1)
-        logger.info(f"New chat started in project: {project_name}")
-        return f"New chat in project: {project_name}"
+        await asyncio.sleep(1.5)
 
-    async def send_message(self, message: str, enable_web_search: bool = False, enable_deep_thinking: bool = False) -> str:
+        # Get the chat ID from the URL
+        chat_id = await self.get_current_chat_id()
+
+        if not chat_id:
+            logger.warning("Could not extract chat ID from URL, returning project URL")
+            return self.page.url
+
+        logger.info(f"New chat started in project: {project_name}, chat_id: {chat_id}")
+        return chat_id
+
+    async def send_message(self, message: str, chat_id: str, enable_web_search: bool = False, enable_deep_thinking: bool = False) -> str:
         """Send a message to ChatGPT with optional web search or deep thinking
-        
+
         Args:
             message: The message to send
+            chat_id: REQUIRED chat ID to send message to. This prevents accidentally sending to wrong chats.
             enable_web_search: If True, adds "search the web" to trigger web search
             enable_deep_thinking: If True, adds "think deeply" to trigger deeper analysis
-            
+
         Returns:
             Status message
         """
         if not self.page:
             await self.launch()
+
+        # Always navigate to the specified chat for safety
+        logger.info(f"Navigating to chat {chat_id} before sending message")
+        nav_success = await self.navigate_to_chat(chat_id)
+        if not nav_success:
+            raise Exception(f"Failed to navigate to chat {chat_id}")
 
         try:
             # Modify message based on flags
@@ -1869,13 +1934,14 @@ class ChatGPTBrowserController:
             logger.error(f"Failed to toggle sidebar: {e}")
             return False
 
-    async def send_and_get_response(self, message: str, timeout: int = 120) -> str | None:
+    async def send_and_get_response(self, message: str, chat_id: str, timeout: int = 120) -> str | None:
         """Send message and wait for complete response
 
         Automatically enables web search for research-related queries.
 
         Args:
             message: The message to send
+            chat_id: REQUIRED chat ID to send message to. This prevents accidentally sending to wrong chats.
             timeout: Maximum time to wait for response in seconds
 
         Returns:
@@ -1888,6 +1954,13 @@ class ChatGPTBrowserController:
             if not self.page:
                 logger.error("Failed to launch browser")
                 return None
+
+        # Navigate to the specified chat
+        logger.info(f"Navigating to chat {chat_id} before sending message")
+        nav_success = await self.navigate_to_chat(chat_id)
+        if not nav_success:
+            logger.error(f"Failed to navigate to chat {chat_id}")
+            return None
 
         # CRITICAL: Count assistant messages BEFORE sending (not after!)
         # This ensures we detect the NEW response, not an old one
@@ -1907,8 +1980,8 @@ class ChatGPTBrowserController:
         if enable_web_search:
             logger.info("Auto-enabling web search due to research keywords")
 
-        # Send message
-        await self.send_message(message, enable_web_search=enable_web_search)
+        # Send message (chat_id already navigated to above)
+        await self.send_message(message, chat_id=chat_id, enable_web_search=enable_web_search)
 
         # Wait for response, passing the pre-counted initial count
         await self.wait_for_response(timeout, initial_assistant_count=initial_assistant_count)
