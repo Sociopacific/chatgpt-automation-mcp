@@ -66,7 +66,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_new_chat",
-            description="Start a new chat conversation with an initial message and return its chat ID",
+            description="Start a new chat with an initial message and return its chat ID",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -163,12 +163,12 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chatgpt_get_conversation",
-            description="Get all messages in a specific conversation",
+            name="chatgpt_get_chat",
+            description="Get all messages in a specific chat",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to get conversation from"}
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to get messages from"}
                 },
                 "required": ["chat_id"],
             },
@@ -191,7 +191,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_upload_file",
-            description="Upload a file to a specific conversation",
+            description="Upload a file to a specific chat",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -213,8 +213,8 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chatgpt_export_conversation",
-            description="Export a specific conversation in markdown or JSON format",
+            name="chatgpt_export_chat",
+            description="Export a specific chat in markdown or JSON format",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -230,8 +230,8 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chatgpt_save_conversation",
-            description="Export and save a specific conversation to a file",
+            name="chatgpt_save_chat",
+            description="Export and save a specific chat to a file",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -252,7 +252,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_edit_message",
-            description="Edit a previous user message in a specific conversation",
+            description="Edit a previous user message in a specific chat",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -270,13 +270,13 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chatgpt_list_conversations",
-            description="List all available ChatGPT conversations",
+            name="chatgpt_list_chats",
+            description="List all available ChatGPT chats",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         Tool(
-            name="chatgpt_switch_conversation",
-            description="Switch to a different conversation",
+            name="chatgpt_switch_chat",
+            description="Switch to a different chat",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -289,8 +289,8 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="chatgpt_delete_conversation",
-            description="Delete a conversation",
+            name="chatgpt_delete_chat",
+            description="Delete a chat",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -332,19 +332,19 @@ async def list_tools() -> list[Tool]:
                                         "send_message",
                                         "send_and_get_response",
                                         "get_last_response",
-                                        "get_conversation",
+                                        "get_chat",
                                         "select_model",
                                         "get_current_model",
                                         "enable_think_longer",
                                         "enable_deep_research",
                                         "upload_file",
                                         "regenerate_response",
-                                        "export_conversation",
-                                        "save_conversation",
+                                        "export_chat",
+                                        "save_chat",
                                         "edit_message",
-                                        "list_conversations",
-                                        "switch_conversation",
-                                        "delete_conversation",
+                                        "list_chats",
+                                        "switch_chat",
+                                        "delete_chat",
                                         "wait_for_response",
                                     ],
                                 },
@@ -478,7 +478,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 return [TextContent(type="text", text="No response received")]
 
-        elif name == "chatgpt_get_conversation":
+        elif name == "chatgpt_get_chat":
             chat_id = arguments["chat_id"]
 
             # Navigate to the chat first
@@ -540,7 +540,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 return [TextContent(type="text", text="Failed to regenerate response")]
 
-        elif name == "chatgpt_export_conversation":
+        elif name == "chatgpt_export_chat":
             chat_id = arguments["chat_id"]
             format = arguments.get("format", "markdown")
 
@@ -554,9 +554,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if content:
                 return [TextContent(type="text", text=content)]
             else:
-                return [TextContent(type="text", text="Failed to export conversation")]
+                return [TextContent(type="text", text="Failed to export chat")]
 
-        elif name == "chatgpt_save_conversation":
+        elif name == "chatgpt_save_chat":
             chat_id = arguments["chat_id"]
             filename = arguments.get("filename")
             format = arguments.get("format", "markdown")
@@ -569,9 +569,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             file_path = await ctrl.save_conversation(filename, format)
 
             if file_path:
-                return [TextContent(type="text", text=f"Conversation saved to: {file_path}")]
+                return [TextContent(type="text", text=f"Chat saved to: {file_path}")]
             else:
-                return [TextContent(type="text", text="Failed to save conversation")]
+                return [TextContent(type="text", text="Failed to save chat")]
 
         elif name == "chatgpt_edit_message":
             chat_id = arguments["chat_id"]
@@ -592,15 +592,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 return [TextContent(type="text", text=f"Failed to edit message {message_index}")]
 
-        elif name == "chatgpt_list_conversations":
+        elif name == "chatgpt_list_chats":
             conversations = await ctrl.list_conversations()
 
             if conversations:
                 return [TextContent(type="text", text=json.dumps(conversations, indent=2))]
             else:
-                return [TextContent(type="text", text="No conversations found")]
+                return [TextContent(type="text", text="No chats found")]
 
-        elif name == "chatgpt_switch_conversation":
+        elif name == "chatgpt_switch_chat":
             chat_id = arguments["chat_id"]
 
             success = await ctrl.navigate_to_chat(chat_id)
@@ -616,7 +616,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     )
                 ]
 
-        elif name == "chatgpt_delete_conversation":
+        elif name == "chatgpt_delete_chat":
             chat_id = arguments["chat_id"]
 
             success = await ctrl.delete_conversation(chat_id)
