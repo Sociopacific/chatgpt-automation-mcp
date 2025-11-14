@@ -1,0 +1,13 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "channel": "chrome",
+      "headless": false,
+      "args": [
+        "--user-data-dir=/Users/sociopacific/Library/Application Support/Google/Chrome-Automation",
+        "--remote-debugging-port=9222"
+      ]
+    }
+  }
+}

@@ -1068,13 +1068,18 @@ class ChatGPTBrowserController:
             logger.error(f"Failed to send message: {e}")
             raise
 
-    async def wait_for_response(self, timeout: int = 30) -> bool:
-        """Wait for ChatGPT to finish responding with error recovery"""
+    async def wait_for_response(self, timeout: int = 30, initial_assistant_count: int | None = None) -> bool:
+        """Wait for ChatGPT to finish responding with error recovery
+
+        Args:
+            timeout: Maximum time to wait in seconds
+            initial_assistant_count: Pre-counted assistant messages (if None, will count on the spot)
+        """
         if not self.page:
             return False
 
         try:
-            return await self._wait_for_response_impl(timeout)
+            return await self._wait_for_response_impl(timeout, initial_assistant_count)
         except Exception as e:
             # Try error recovery if available
             if self.error_recovery:
@@ -1082,20 +1087,33 @@ class ChatGPTBrowserController:
                 if recovery_successful:
                     # Retry the operation once after recovery
                     try:
-                        return await self._wait_for_response_impl(timeout)
+                        return await self._wait_for_response_impl(timeout, initial_assistant_count)
                     except Exception as retry_error:
                         logger.error(f"Wait for response retry failed: {retry_error}")
                         return False
             logger.warning(f"Error waiting for response: {e}")
             return False
 
-    async def _wait_for_response_impl(self, timeout: int) -> bool:
+    async def _wait_for_response_impl(self, timeout: int, initial_assistant_count: int | None = None) -> bool:
         """Implementation of wait for response logic
 
-        Two-stage approach:
+        Three-stage approach:
+        0. Count initial assistant messages (to detect NEW response) - if not provided
         1. Wait for "Stop generating" button to disappear (if present)
-        2. Wait for action buttons panel to appear (Copy, thumbs up/down, etc.)
+        2. Wait for NEW assistant message with copy button
+
+        Args:
+            timeout: Maximum time to wait in seconds
+            initial_assistant_count: Pre-counted assistant messages (if None, will count on the spot)
         """
+        # Stage 0: Count initial assistant messages (if not already provided)
+        if initial_assistant_count is None:
+            initial_assistant_articles = await self.page.locator('article[data-turn="assistant"]').all()
+            initial_assistant_count = len(initial_assistant_articles)
+            logger.debug(f"Initial assistant message count (counted on the spot): {initial_assistant_count}")
+        else:
+            logger.debug(f"Initial assistant message count (pre-counted before send): {initial_assistant_count}")
+
         # Stage 1: Check for "Stop generating" button
         stop_selectors = [
             'button:has-text("Stop generating")',  # English
@@ -1134,32 +1152,57 @@ class ChatGPTBrowserController:
 
         import time
         stage2_start = time.time()
-        stage2_timeout = 10  # Max 10 seconds to find copy button after Stop button disappears
 
-        while time.time() - stage2_start < stage2_timeout:
+        while time.time() - stage2_start < timeout:
             try:
-                # Find the last assistant message using data-turn attribute (most reliable!)
-                # This attribute distinguishes user messages from assistant messages
+                # Find all assistant messages
                 assistant_articles = await self.page.locator('article[data-turn="assistant"]').all()
+                current_assistant_count = len(assistant_articles)
 
-                if not assistant_articles:
-                    logger.debug("No assistant messages found yet, waiting...")
-                    await asyncio.sleep(0.3)
+                # CRITICAL: Check if a NEW assistant message appeared
+                if current_assistant_count <= initial_assistant_count:
+                    logger.debug(f"Waiting for NEW assistant message (current: {current_assistant_count}, initial: {initial_assistant_count})")
+                    await asyncio.sleep(0.5)
                     continue
 
-                # Get the last assistant message
+                # NEW assistant message exists! Get the last one
                 last_assistant_article = assistant_articles[-1]
+
+                # CRITICAL: Check if ChatGPT is still thinking/researching
+                # If "Answer now" button is present, the response is NOT complete
+                answer_now_selectors = [
+                    'button:has-text("Answer now")',  # English
+                    'button:has-text("Ответь сейчас")',  # Russian
+                ]
+
+                still_thinking = False
+                for selector in answer_now_selectors:
+                    answer_now_button = last_assistant_article.locator(selector).first
+                    if await answer_now_button.count() > 0 and await answer_now_button.is_visible():
+                        logger.debug(f"ChatGPT still thinking/researching - found '{selector}' button")
+                        still_thinking = True
+                        break
+
+                if still_thinking:
+                    await asyncio.sleep(1.0)
+                    continue
 
                 # Look for the copy button IN THIS SPECIFIC ARTICLE
                 # data-testid is the most reliable selector
                 copy_button = last_assistant_article.locator('button[data-testid="copy-turn-action-button"]').first
 
                 if await copy_button.count() > 0 and await copy_button.is_visible():
-                    logger.debug("Response complete - found copy button in last assistant message")
+                    # DEBUG: Log the HTML of the article with copy button
+                    article_html = await last_assistant_article.inner_html()
+                    logger.info(f"===== FOUND COPY BUTTON - Article HTML =====")
+                    logger.info(article_html)
+                    logger.info(f"===== END Article HTML (length: {len(article_html)}) =====")
+
+                    logger.debug(f"Response complete - found copy button in NEW assistant message (count: {current_assistant_count})")
                     return True
 
-                # Button not found yet, wait a bit and retry
-                await asyncio.sleep(0.3)
+                # Copy button not found yet, wait a bit and retry
+                await asyncio.sleep(0.5)
 
             except Exception as e:
                 logger.debug(f"Error in stage 2: {e}")
@@ -1167,58 +1210,121 @@ class ChatGPTBrowserController:
                 continue
 
         # Timeout - assume complete anyway
-        logger.warning("Copy button not found after 10s, assuming response complete")
+        logger.warning(f"Copy button not found after {timeout}s timeout, assuming response complete")
         return True
 
-    async def get_last_response(self) -> str | None:
-        """Get the last response from ChatGPT"""
+    async def get_last_response(self, debug_html: bool = False) -> str | None:
+        """Get the last response from ChatGPT
+
+        Args:
+            debug_html: If True, logs the HTML structure for debugging
+        """
         if not self.page:
             return None
 
         try:
-            # Primary method: Get all article elements (conversation messages)
-            articles = await self.page.locator('main article').all()
-            
+            # Primary method: Use data-turn attribute to get assistant messages
+            logger.info("Getting last assistant response using data-turn selector")
+            articles = await self.page.locator('article[data-turn="assistant"]').all()
+            logger.info(f"Found {len(articles)} assistant messages")
+
             if not articles:
+                logger.warning("No assistant messages found with data-turn selector, trying fallback selectors")
                 # Fallback: Try other message selectors
                 message_selectors = [
+                    'main article',
                     'div[data-message-author-role="assistant"]',
                     'div.group:has(div:has-text("ChatGPT"))',
                     'div.flex.flex-col:has(div:has-text("said:"))',
                 ]
-                
+
                 for selector in message_selectors:
                     messages = await self.page.locator(selector).all()
                     if messages:
+                        logger.debug(f"Found {len(messages)} messages with fallback selector: {selector}")
                         articles = messages
                         break
-            
+
             if not articles:
+                logger.error("No messages found with any selector")
                 return None
 
             # Get the last article (should be assistant's response)
             last_article = articles[-1]
+            logger.info(f"Extracting text from last assistant message (total: {len(articles)})")
 
-            # Extract text content
-            text_content = await last_article.inner_text()
+            # Try to find the actual message content container (markdown/prose div)
+            # This excludes UI buttons like "Copy", "Answer now", etc.
+            content_selectors = [
+                '.markdown',  # Common class for message content
+                '.prose',     # Alternative class
+                'div[data-message-author-role="assistant"]',
+                'div.agent-turn',
+            ]
+
+            text_content = None
+            for selector in content_selectors:
+                content_div = last_article.locator(selector).first
+                if await content_div.count() > 0:
+                    text_content = await content_div.inner_text()
+                    logger.info(f"Found content with selector: {selector}")
+                    break
+
+            # Fallback: use entire article if no specific content div found
+            if not text_content:
+                logger.info("No specific content div found, using entire article text")
+                text_content = await last_article.inner_text()
+
+            logger.info(f"Raw text content length: {len(text_content)} chars")
+            logger.info(f"Raw text preview: {text_content[:200]}...")
 
             # Clean up the text
-            # Remove common prefixes
+            # Remove common prefixes (English and Russian)
             prefixes_to_remove = [
                 "ChatGPT said:",
+                "ChatGPT сказал:",  # Russian
                 "ChatGPT",
                 "GPT-5 said:",
+                "GPT-5 сказал:",  # Russian
                 "GPT-5 Thinking said:",
+                "GPT-5 Thinking сказал:",  # Russian
                 "GPT-5 Pro said:",
-                "said:"
+                "GPT-5 Pro сказал:",  # Russian
+                "said:",
+                "сказал:",  # Russian
             ]
-            
+
             cleaned_text = text_content.strip()
             for prefix in prefixes_to_remove:
                 if cleaned_text.startswith(prefix):
+                    logger.info(f"Removed prefix: '{prefix}'")
                     cleaned_text = cleaned_text[len(prefix):].strip()
                     break
-            
+
+            # Remove UI elements that sometimes appear in the text
+            ui_elements_to_remove = [
+                "Поиск в сети",  # "Search the web" in Russian
+                "Search the web",
+                "Ответь сейчас",  # "Answer now" in Russian
+                "Answer now",
+                "Думаю",  # "Thinking" in Russian
+                "Thinking",
+                "Copy code",
+                "Копировать код",  # "Copy code" in Russian
+            ]
+
+            for ui_element in ui_elements_to_remove:
+                cleaned_text = cleaned_text.replace(ui_element, "").strip()
+
+            # Remove URLs that appear as sources (usually at start or end)
+            import re
+            # Remove standalone URLs (on their own line or at start/end)
+            cleaned_text = re.sub(r'^\s*(?:https?://)?(?:www\.)?[\w\-\.]+\.[a-z]+(?:/\S*)?\s*$', '', cleaned_text, flags=re.MULTILINE)
+            cleaned_text = cleaned_text.strip()
+
+            logger.info(f"Cleaned text length: {len(cleaned_text)} chars")
+            logger.info(f"Cleaned text preview: {cleaned_text[:200]}...")
+
             # Also check for "Do you like this personality?" and similar suffixes
             # These are sometimes added by ChatGPT
             suffixes_to_remove = [
@@ -1226,7 +1332,7 @@ class ChatGPTBrowserController:
                 "Was this response helpful?",
                 "Is this what you were looking for?"
             ]
-            
+
             for suffix in suffixes_to_remove:
                 if cleaned_text.endswith(suffix):
                     cleaned_text = cleaned_text[:-len(suffix)].strip()
@@ -1412,8 +1518,16 @@ class ChatGPTBrowserController:
 
     async def select_model(self, model: str) -> bool:
         """Select a specific model with improved reliability and error recovery"""
+        # Only launch if browser isn't running at all
+        # Don't create a new chat if already on a page
         if not self.page:
-            await self.launch()
+            # Try CDP connection first (existing browser)
+            try:
+                await self._connect_via_cdp()
+                logger.info("Connected to existing browser via CDP for model selection")
+            except:
+                # If CDP fails, do full launch
+                await self.launch()
 
         try:
             return await self._select_model_impl(model)
@@ -1432,17 +1546,17 @@ class ChatGPTBrowserController:
             return False
 
     async def _select_model_impl(self, model: str) -> bool:
-        """Implementation of model selection logic using URL-based approach.
-        
-        This method uses direct URL navigation which is much more reliable than
-        navigating the constantly-changing ChatGPT UI menus.
-        """        
+        """Implementation of model selection logic using UI selector.
+
+        This method clicks on the model selector button and selects the desired model
+        from the dropdown menu.
+        """
         # First check if we're already on the requested model
         current = await self.get_current_model()
         if current:
             current_lower = current.lower().replace("-", "").replace(" ", "").replace(".", "")
             model_lower = model.lower().replace("-", "").replace(" ", "").replace(".", "")
-            
+
             # Check various matching patterns
             already_selected = (
                 model_lower in current_lower or
@@ -1458,127 +1572,115 @@ class ChatGPTBrowserController:
                 (model_lower == "o3pro" and "o3pro" in current_lower) or
                 (model_lower in ["o4mini", "o4-mini"] and "o4mini" in current_lower)
             )
-            
+
             if already_selected:
                 logger.info(f"Already using model: {current}")
                 return True
 
-        # URL-based model mapping - much more reliable than UI navigation
-        # Based on testing November 2025: ChatGPT accepts these URL parameters
-        url_model_map = {
-            # GPT-5.1 models (current as of Nov 2025)
-            "gpt-5.1": "gpt-5.1",
-            "5.1": "gpt-5.1",
-            "auto": "gpt-5.1",  # Default to latest
-            "5": "gpt-5.1",     # Default to latest
+        # Model mapping to data-testid selectors
+        # Based on UI testing November 2025
+        model_selector_map = {
+            # GPT-5.1 models (in main menu)
+            "gpt-5.1": "model-switcher-gpt-5-1",
+            "5.1": "model-switcher-gpt-5-1",
+            "auto": "model-switcher-gpt-5-1",
+            "5": "model-switcher-gpt-5-1",
 
-            "gpt-5.1-thinking": "gpt-5.1-thinking",
-            "5.1-thinking": "gpt-5.1-thinking",
-            "thinking": "gpt-5.1-thinking",  # Default to latest thinking
+            "gpt-5.1-instant": "model-switcher-gpt-5-1-instant",
+            "5.1-instant": "model-switcher-gpt-5-1-instant",
+            "instant": "model-switcher-gpt-5-1-instant",
 
-            # Legacy GPT-5 (before 5.1)
-            "gpt-5": "gpt-5",
-            "gpt-5-thinking": "gpt-5-thinking",
-            "gpt-5-t": "gpt-5-t",
+            "gpt-5.1-thinking": "model-switcher-gpt-5-1-thinking",
+            "5.1-thinking": "model-switcher-gpt-5-1-thinking",
+            "thinking": "model-switcher-gpt-5-1-thinking",
 
-            "gpt-5-thinking-mini": "gpt-5-t-mini",
-            "gpt-5-t-mini": "gpt-5-t-mini",
-            "thinking-mini": "gpt-5-t-mini",
+            # Legacy GPT-5 (in submenu)
+            "gpt-5": "model-switcher-gpt-5-instant",
+            "gpt-5-instant": "model-switcher-gpt-5-instant",
 
-            "gpt-5-pro": "gpt-5-pro",
-            "5-pro": "gpt-5-pro",
-            "pro": "gpt-5-pro",
-            
-            # Legacy models we care about
-            "gpt-4-1": "gpt-4-1",  # Uses dash not dot
-            "gpt-4.1": "gpt-4-1",  # Convert dot to dash
-            "4.1": "gpt-4-1",
-            "4-1": "gpt-4-1",
-            
-            "o3": "o3",
-            "o3-pro": "o3-pro",
-            
-            # Less important but supported
-            "gpt-4o": "gpt-4o",
-            "4o": "gpt-4o",
+            "gpt-5-thinking": "model-switcher-gpt-5-thinking",
+            "gpt-5-t": "model-switcher-gpt-5-thinking",
+
+            "gpt-5-thinking-mini": "model-switcher-gpt-5-t-mini",
+            "gpt-5-t-mini": "model-switcher-gpt-5-t-mini",
+            "thinking-mini": "model-switcher-gpt-5-t-mini",
+
+            # Other models (in submenu)
+            "gpt-4o": "model-switcher-gpt-4o",
+            "4o": "model-switcher-gpt-4o",
+
+            "gpt-4.1": "model-switcher-gpt-4-1",
+            "gpt-4-1": "model-switcher-gpt-4-1",
+            "4.1": "model-switcher-gpt-4-1",
+            "4-1": "model-switcher-gpt-4-1",
+
+            "o3": "model-switcher-o3",
+            "o3-pro": "model-switcher-o3-pro",
+            "o4-mini": "model-switcher-o4-mini",
         }
-        
-        # Get the URL model parameter
-        url_model = url_model_map.get(model.lower())
-        if not url_model:
-            logger.warning(f"Unsupported model: {model}. Supported: {list(url_model_map.keys())}")
+
+        # Get the selector for the model
+        testid = model_selector_map.get(model.lower())
+        if not testid:
+            logger.warning(f"Unsupported model: {model}. Supported: {list(model_selector_map.keys())}")
             return False
-        
-        # Navigate directly to the model URL
-        target_url = f"https://chatgpt.com/?model={url_model}"
-        logger.debug(f"Navigating to: {target_url}")
-        
+
+        # Determine if model is in main menu or submenu
+        main_menu_models = [
+            "model-switcher-gpt-5-1",
+            "model-switcher-gpt-5-1-instant",
+            "model-switcher-gpt-5-1-thinking",
+        ]
+        in_submenu = testid not in main_menu_models
+
         try:
-            await self.page.goto(target_url, wait_until="domcontentloaded")
-            await asyncio.sleep(get_delay("page_load"))
-        except Exception as e:
-            logger.error(f"Failed to navigate to model URL: {e}")
-            return False
-        
-        # Verify the model was selected by checking the current model
-        await asyncio.sleep(get_delay("model_verify"))
-        new_model = await self.get_current_model()
-        if new_model:
-            # Normalize model names for comparison
-            new_model_normalized = new_model.replace(" ", "").replace("-", "").lower()
-            model_normalized = model.replace(" ", "").replace("-", "").lower()
-            
-            # Check if model changed successfully
-            if model_normalized in new_model_normalized or new_model_normalized in model_normalized:
-                logger.info(f"Successfully selected model via URL: {new_model}")
-                # IMPORTANT: Navigate to project to ensure chat is created in project
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
-                return True
-            # Special handling for gpt-5 (shows as just "ChatGPT" in UI)
-            elif model.lower() in ["gpt-5", "gpt5"] and new_model.lower() == "chatgpt":
-                logger.info(f"Successfully selected base GPT-5 via URL: {new_model}")
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
-                return True
-            # Special handling for shorthand names
-            elif model.lower() == "5" and "gpt5" in new_model_normalized and "thinking" not in new_model_normalized and "pro" not in new_model_normalized:
-                logger.info(f"Successfully selected base GPT-5 via URL: {new_model}")
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
-                return True
-            elif model.lower() == "thinking" and "thinking" in new_model_normalized:
-                logger.info(f"Successfully selected GPT-5 Thinking via URL: {new_model}")
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
-                return True
-            elif model.lower() == "pro" and "pro" in new_model_normalized:
-                logger.info(f"Successfully selected GPT-5 Pro via URL: {new_model}")
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
-                return True
-            elif model.lower() in ["o3"] and "o3" in new_model_normalized:
-                logger.info(f"Successfully selected o3 via URL: {new_model}")
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
-                return True
-            elif model.lower() in ["4.1", "4-1", "gpt-4.1", "gpt-4-1"] and "41" in new_model_normalized:
-                logger.info(f"Successfully selected GPT-4.1 via URL: {new_model}")
-                logger.debug("Navigating to MCP-Automation project after model selection...")
-                await self.ensure_project_exists("MCP-Automation")
-                await self.navigate_to_project("MCP-Automation")
+            # Wait for page to be ready
+            logger.info(f"Waiting for page to stabilize")
+            await asyncio.sleep(2.0)
+
+            # Click model selector button using getByRole (like Playwright MCP does)
+            logger.info(f"Opening model selector menu")
+            # Find button by role - this is more reliable than data-testid
+            selector_buttons = await self.page.get_by_role("button").all()
+            model_selector_button = None
+
+            for button in selector_buttons:
+                aria_label = await button.get_attribute("aria-label")
+                if aria_label and "Селектор моделей" in aria_label or "Model selector" in str(aria_label):
+                    model_selector_button = button
+                    break
+
+            if not model_selector_button:
+                # Fallback to data-testid
+                model_selector_button = self.page.get_by_test_id("model-switcher-dropdown-button")
+
+            await model_selector_button.click(timeout=10000)
+            await asyncio.sleep(1.0)  # Wait for menu to open
+
+            if in_submenu:
+                # Hover over "Устаревшие модели" submenu to open it
+                logger.info("Opening legacy models submenu")
+                submenu_button = self.page.get_by_test_id("Устаревшие модели-submenu")
+                await submenu_button.hover(timeout=10000)
+                await asyncio.sleep(1.0)
+
+            # Click on the target model using get_by_test_id (proven to work)
+            logger.info(f"Selecting model: {testid}")
+            model_button = self.page.get_by_test_id(testid)
+            await model_button.click(timeout=10000)
+            await asyncio.sleep(1.0)
+
+            # Verify the model was selected
+            new_model = await self.get_current_model()
+            if new_model:
+                logger.info(f"Successfully selected model: {new_model}")
                 return True
             else:
-                logger.warning(f"URL-based model selection verification failed. Expected {model}, got {new_model}")
+                logger.error("Could not verify model selection")
                 return False
-        else:
-            logger.error(f"Could not verify model selection after URL navigation")
+
+        except Exception as e:
+            logger.error(f"Failed to select model via UI: {e}")
             return False
 
     async def is_ready(self) -> bool:
@@ -1769,30 +1871,48 @@ class ChatGPTBrowserController:
 
     async def send_and_get_response(self, message: str, timeout: int = 120) -> str | None:
         """Send message and wait for complete response
-        
+
         Automatically enables web search for research-related queries.
-        
+
         Args:
             message: The message to send
             timeout: Maximum time to wait for response in seconds
-            
+
         Returns:
             The response text or None if failed
         """
+        # Ensure browser is launched
+        if not self.page:
+            logger.warning("Page not initialized, launching browser first")
+            await self.launch()
+            if not self.page:
+                logger.error("Failed to launch browser")
+                return None
+
+        # CRITICAL: Count assistant messages BEFORE sending (not after!)
+        # This ensures we detect the NEW response, not an old one
+        initial_assistant_articles = await self.page.locator('article[data-turn="assistant"]').all()
+        initial_assistant_count = len(initial_assistant_articles)
+        logger.info(f"Counted {initial_assistant_count} assistant messages BEFORE sending")
+
         # Check if message needs web search
         research_keywords = [
-            "research", "latest", "current", "recent", "2025", "2024", "2026", 
+            "research", "latest", "current", "recent", "2025", "2024", "2026",
             "update", "new", "find", "search", "discover", "investigate",
             "what's new", "recent changes", "current state", "up to date"
         ]
         message_lower = message.lower()
         enable_web_search = any(kw in message_lower for kw in research_keywords)
-        
+
         if enable_web_search:
             logger.info("Auto-enabling web search due to research keywords")
-        
+
+        # Send message
         await self.send_message(message, enable_web_search=enable_web_search)
-        await self.wait_for_response(timeout)
+
+        # Wait for response, passing the pre-counted initial count
+        await self.wait_for_response(timeout, initial_assistant_count=initial_assistant_count)
+
         return await self.get_last_response()
 
     async def take_screenshot(self, name: str = "chatgpt") -> Path | None:

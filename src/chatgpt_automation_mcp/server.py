@@ -17,8 +17,18 @@ from .browser_controller import ChatGPTBrowserController
 from .timeout_helper import get_default_timeout, format_timeout_for_display
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+import os
+log_file = os.path.expanduser("~/chatgpt-mcp.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Also print to stderr
+    ]
+)
 logger = logging.getLogger(__name__)
+logger.info(f"Logging to {log_file}")
 
 # Create server instance
 server = Server("chatgpt-automation")
@@ -75,19 +85,31 @@ async def list_tools() -> list[Tool]:
                         "enum": [
                             "gpt-5.1",
                             "5.1",
+                            "gpt-5.1-instant",
+                            "5.1-instant",
+                            "instant",
                             "gpt-5.1-thinking",
+                            "5.1-thinking",
+                            "thinking",
+                            "auto",
                             "gpt-5",
                             "5",
+                            "gpt-5-instant",
                             "gpt-5-thinking",
+                            "gpt-5-t-mini",
+                            "thinking-mini",
                             "gpt-5-pro",
                             "gpt-4o",
                             "4o",
                             "gpt-4.5",
+                            "gpt-4.1",
+                            "gpt-4-1",
+                            "4.1",
+                            "4-1",
+                            "gpt-4.1-mini",
                             "o3",
                             "o3-pro",
                             "o4-mini",
-                            "gpt-4.1",
-                            "gpt-4.1-mini",
                         ],
                     }
                 },
