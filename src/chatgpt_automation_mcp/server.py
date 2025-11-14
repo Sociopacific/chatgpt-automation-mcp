@@ -66,13 +66,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_new_chat",
-            description="Start a new chat conversation and return its chat ID",
+            description="Start a new chat conversation with an initial message and return its chat ID",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "message": {"type": "string", "description": "REQUIRED: Initial message to send (creates the chat with an ID)"},
                     "project_name": {"type": "string", "description": "Name of the project to create chat in (default: MCP-Automation)"}
                 },
-                "required": [],
+                "required": ["message"],
             },
         ),
         Tool(
@@ -368,9 +369,34 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=result)]
 
         elif name == "chatgpt_new_chat":
+            message = arguments["message"]
             project_name = arguments.get("project_name", "MCP-Automation")
-            chat_id = await ctrl.new_chat(project_name=project_name)
-            return [TextContent(type="text", text=f"New chat created: {chat_id}")]
+
+            # Navigate to project page
+            await ctrl.new_chat(project_name=project_name)
+
+            # Count existing assistant messages before sending
+            initial_assistant_articles = await ctrl.page.locator('article[data-turn="assistant"]').all()
+            initial_assistant_count = len(initial_assistant_articles)
+
+            # Send the first message (this will create a chat with ID)
+            await ctrl._send_message_to_current_page(message)
+
+            # Wait for response
+            await ctrl.wait_for_response(timeout=120, initial_assistant_count=initial_assistant_count)
+
+            # Get the chat_id from URL (should be set after first message)
+            chat_id = await ctrl.get_current_chat_id()
+
+            if not chat_id:
+                return [TextContent(type="text", text="Failed to create chat - no chat ID found")]
+
+            # Get the response
+            response = await ctrl.get_last_response()
+
+            # Return both chat_id and response
+            result = f"Chat ID: {chat_id}\n\nResponse: {response}"
+            return [TextContent(type="text", text=result)]
 
         elif name == "chatgpt_get_model":
             model = await ctrl.get_current_model()

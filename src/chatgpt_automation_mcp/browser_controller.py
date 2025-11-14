@@ -1042,12 +1042,14 @@ class ChatGPTBrowserController:
         logger.info(f"New chat started in project: {project_name}, chat_id: {chat_id}")
         return chat_id
 
-    async def send_message(self, message: str, chat_id: str, enable_web_search: bool = False, enable_deep_thinking: bool = False) -> str:
-        """Send a message to ChatGPT with optional web search or deep thinking
+    async def _send_message_to_current_page(self, message: str, enable_web_search: bool = False, enable_deep_thinking: bool = False) -> str:
+        """INTERNAL: Send a message to currently open page without navigation
+
+        WARNING: This is for internal use only (e.g., creating new chats).
+        External callers should use send_message() with chat_id.
 
         Args:
             message: The message to send
-            chat_id: REQUIRED chat ID to send message to. This prevents accidentally sending to wrong chats.
             enable_web_search: If True, adds "search the web" to trigger web search
             enable_deep_thinking: If True, adds "think deeply" to trigger deeper analysis
 
@@ -1055,13 +1057,7 @@ class ChatGPTBrowserController:
             Status message
         """
         if not self.page:
-            await self.launch()
-
-        # Always navigate to the specified chat for safety
-        logger.info(f"Navigating to chat {chat_id} before sending message")
-        nav_success = await self.navigate_to_chat(chat_id)
-        if not nav_success:
-            raise Exception(f"Failed to navigate to chat {chat_id}")
+            raise Exception("Page not initialized")
 
         try:
             # Modify message based on flags
@@ -1132,6 +1128,30 @@ class ChatGPTBrowserController:
 
             logger.error(f"Failed to send message: {e}")
             raise
+
+    async def send_message(self, message: str, chat_id: str, enable_web_search: bool = False, enable_deep_thinking: bool = False) -> str:
+        """Send a message to ChatGPT in a specific chat
+
+        Args:
+            message: The message to send
+            chat_id: REQUIRED chat ID to send message to. This prevents accidentally sending to wrong chats.
+            enable_web_search: If True, adds "search the web" to trigger web search
+            enable_deep_thinking: If True, adds "think deeply" to trigger deeper analysis
+
+        Returns:
+            Status message
+        """
+        if not self.page:
+            await self.launch()
+
+        # Navigate to the specified chat for safety
+        logger.info(f"Navigating to chat {chat_id} before sending message")
+        nav_success = await self.navigate_to_chat(chat_id)
+        if not nav_success:
+            raise Exception(f"Failed to navigate to chat {chat_id}")
+
+        # Send message to the current page
+        return await self._send_message_to_current_page(message, enable_web_search, enable_deep_thinking)
 
     async def wait_for_response(self, timeout: int = 30, initial_assistant_count: int | None = None) -> bool:
         """Wait for ChatGPT to finish responding with error recovery
