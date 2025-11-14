@@ -1,35 +1,29 @@
 {
-  "timestamp": "2025-08-14T16:55:16.388524",
+  "timestamp": "2025-11-14T19:04:32.042580",
   "url": "https://chatgpt.com/",
   "elements": {
     "composer_btn_0": {
-      "aria_label": null,
+      "aria_label": "\u0414\u043e\u0431\u0430\u0432\u043b\u044f\u0439\u0442\u0435 \u0444\u0430\u0439\u043b\u044b \u0438 \u043c\u043d\u043e\u0433\u043e\u0435 \u0434\u0440\u0443\u0433\u043e\u0435",
       "title": null,
       "text": ""
     },
     "composer_btn_1": {
-      "aria_label": "Dictate button",
+      "aria_label": "\u041a\u043d\u043e\u043f\u043a\u0430 \u0434\u0438\u043a\u0442\u043e\u0432\u043a\u0438",
       "title": null,
       "text": ""
     },
     "attachment_menu_items": [
       {
         "index": 0,
-        "text": "Add photos & files",
+        "text": "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0444\u043e\u0442\u043e \u0438 \u0444\u0430\u0439\u043b\u044b\n\u2318\nU",
         "role": "menuitem"
       },
       {
         "index": 1,
-        "text": "Add from Google Drive",
-        "role": "menuitem"
-      },
-      {
-        "index": 2,
-        "text": "More",
+        "text": "\u0411\u043e\u043b\u044c\u0448\u0435",
         "role": "menuitem"
       }
     ],
-    "current_model": "ChatGPT 5 Thinking",
-    "deep_research": 1
+    "current_model": "ChatGPT 5.1 Thinking"
   }
 }

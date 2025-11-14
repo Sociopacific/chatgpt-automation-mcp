@@ -27,6 +27,7 @@ async def test_deep_research_detailed_discovery(browser):
     
     # 1. Check if Deep Research appears in the "More" menu
     print("\n1. Checking 'More' menu option...")
+    deep_research_items = []  # Initialize to avoid UnboundLocalError
     attachment_button = browser.controller.page.locator('.composer-btn:not([aria-label*="Dictate"])').first
     if await attachment_button.count() > 0:
         await attachment_button.click()
@@ -79,7 +80,7 @@ async def test_deep_research_detailed_discovery(browser):
     
     # 2. Check if it appears with research queries
     print("\n2. Checking if Deep Research appears with research queries...")
-    await browser.controller.page.fill('textarea[placeholder*="Message"]', 
+    await browser.controller.page.fill('#prompt-textarea',
                                        "Research the latest breakthroughs in quantum computing in 2025",
                                        timeout=60000)  # 60 second timeout
     await browser.screenshot("05_research_query_typed")
@@ -126,6 +127,7 @@ async def test_think_longer_detailed_discovery(browser):
     
     # 1. Check attachment menu and More submenu
     print("\n1. Checking attachment menu...")
+    think_elements = []  # Initialize to avoid UnboundLocalError
     attachment_button = browser.controller.page.locator('.composer-btn:not([aria-label*="Dictate"])').first
     if await attachment_button.count() > 0:
         await attachment_button.click()
@@ -157,7 +159,7 @@ async def test_think_longer_detailed_discovery(browser):
     print("\n2. Checking for automatic Think Longer with model...")
     
     # Type a complex reasoning query
-    await browser.controller.page.fill('textarea[placeholder*="Message"]', 
+    await browser.controller.page.fill('#prompt-textarea',
                                        "Solve this complex problem step by step: If a train leaves...")
     await browser.screenshot("04_complex_query")
     

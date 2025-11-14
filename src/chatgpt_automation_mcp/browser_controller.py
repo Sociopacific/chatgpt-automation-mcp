@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import platform
+import time
 from pathlib import Path
 
 from playwright.async_api import (
@@ -221,6 +222,12 @@ class ChatGPTBrowserController:
                     
             except Exception as e:
                 logger.debug(f"Could not check/navigate from intro page: {e}")
+
+            # Check for CAPTCHA after page load
+            if await self._detect_captcha():
+                logger.info("CAPTCHA detected on page load, waiting for resolution...")
+                if not await self._wait_for_captcha_resolution():
+                    raise Exception("CAPTCHA present on initial page load - unable to proceed")
 
             # Check if login is needed
             if await self._needs_login():
@@ -448,6 +455,106 @@ class ChatGPTBrowserController:
             self.browser = None
             raise
 
+    async def _detect_captcha(self) -> bool:
+        """
+        Detect if CAPTCHA is present on the page
+        Supports: reCAPTCHA, hCaptcha, Cloudflare, and OpenAI-specific challenges
+
+        Returns:
+            True if CAPTCHA detected, False otherwise
+        """
+        try:
+            captcha_selectors = [
+                # Google reCAPTCHA
+                'iframe[src*="recaptcha"]',
+                'iframe[title*="recaptcha"]',
+                'div.g-recaptcha',
+
+                # hCaptcha
+                'iframe[src*="hcaptcha"]',
+                'div.h-captcha',
+
+                # Cloudflare
+                'iframe[src*="cloudflare"]',
+                'div#challenge-stage',
+                'div.cf-browser-verification',
+
+                # Generic indicators (English)
+                'div:has-text("verify you are human")',
+                'div:has-text("prove you are not a robot")',
+                'div:has-text("Security check")',
+                'div:has-text("Complete the security check")',
+
+                # Generic indicators (Russian)
+                'div:has-text("подтвердите, что вы человек")',
+                'div:has-text("докажите, что вы не робот")',
+                'div:has-text("Проверка безопасности")',
+
+                # OpenAI specific
+                'div:has-text("Just a moment")',
+                'div:has-text("Checking your browser")',
+            ]
+
+            for selector in captcha_selectors:
+                try:
+                    count = await self.page.locator(selector).count()
+                    if count > 0:
+                        # Check if element is actually visible
+                        is_visible = await self.page.locator(selector).first.is_visible()
+                        if is_visible:
+                            logger.warning(f"CAPTCHA detected with selector: {selector}")
+                            return True
+                except Exception:
+                    # Some selectors might fail, continue checking others
+                    pass
+
+            return False
+
+        except Exception as e:
+            logger.debug(f"Error during CAPTCHA detection: {e}")
+            return False
+
+    async def _wait_for_captcha_resolution(self, timeout: int = 1800) -> bool:
+        """
+        Wait for user to manually solve CAPTCHA
+
+        Args:
+            timeout: Maximum time to wait in seconds (default: 30 minutes)
+
+        Returns:
+            True if CAPTCHA was solved, False if timeout occurred
+        """
+        logger.warning("⚠️  CAPTCHA DETECTED!")
+        logger.warning(f"📋 Please solve the CAPTCHA manually in the browser window.")
+        logger.warning(f"⏳ Waiting up to {timeout // 60} minutes for resolution...")
+
+        start_time = time.time()
+        check_interval = 5  # Check every 5 seconds
+        last_log_time = start_time
+
+        while True:
+            # Check if timeout exceeded
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                logger.error(f"❌ CAPTCHA resolution timeout after {timeout}s!")
+                return False
+
+            # Check if CAPTCHA is still present
+            if not await self._detect_captcha():
+                logger.info("✅ CAPTCHA solved successfully!")
+                # Give page a moment to fully load after CAPTCHA
+                await asyncio.sleep(2)
+                return True
+
+            # Log progress every 30 seconds
+            if time.time() - last_log_time >= 30:
+                remaining = int(timeout - elapsed)
+                logger.info(f"⏳ Still waiting for CAPTCHA resolution... {remaining}s remaining")
+                last_log_time = time.time()
+
+            # Wait before next check
+            await asyncio.sleep(check_interval)
+
     async def _needs_login(self) -> bool:
         """Check if login is required"""
         try:
@@ -481,8 +588,13 @@ class ChatGPTBrowserController:
             return True
 
     async def _handle_login(self) -> None:
-        """Handle login flow"""
+        """Handle login flow with CAPTCHA detection"""
         logger.info("Login required...")
+
+        # Check for CAPTCHA before starting login
+        if await self._detect_captcha():
+            if not await self._wait_for_captcha_resolution():
+                raise Exception("CAPTCHA detected before login - unable to proceed")
 
         if not self.config.CHATGPT_EMAIL:
             logger.warning("No credentials provided, waiting for manual login...")
@@ -495,12 +607,22 @@ class ChatGPTBrowserController:
             await self.page.click('button:has-text("Log in")')
             await self.page.wait_for_load_state("networkidle")
 
+            # Check for CAPTCHA after clicking login
+            if await self._detect_captcha():
+                if not await self._wait_for_captcha_resolution():
+                    raise Exception("CAPTCHA during login - unable to proceed")
+
             # Enter email
             await self.page.fill('input[type="email"]', self.config.CHATGPT_EMAIL)
             await self.page.click('button[type="submit"]')
 
             # Wait for password field
             await self.page.wait_for_selector('input[type="password"]', timeout=10000)
+
+            # Check for CAPTCHA after email submission
+            if await self._detect_captcha():
+                if not await self._wait_for_captcha_resolution():
+                    raise Exception("CAPTCHA after email - unable to proceed")
 
             if self.config.CHATGPT_PASSWORD:
                 await self.page.fill('input[type="password"]', self.config.CHATGPT_PASSWORD)
@@ -510,6 +632,12 @@ class ChatGPTBrowserController:
 
             # Wait for successful login
             await self.page.wait_for_url("https://chatgpt.com/**", timeout=60000)
+
+            # Final CAPTCHA check after login
+            if await self._detect_captcha():
+                if not await self._wait_for_captcha_resolution():
+                    raise Exception("CAPTCHA after login - unable to proceed")
+
             logger.info("Login successful")
 
         except PlaywrightTimeout:
@@ -519,13 +647,299 @@ class ChatGPTBrowserController:
             logger.error(f"Login failed: {e}")
             raise
 
-    async def new_chat(self) -> str:
-        """Start a new chat conversation with error recovery"""
+    # Project Management Methods
+
+    async def ensure_project_exists(self, project_name: str = "MCP-Automation") -> bool:
+        """
+        Ensure that a project with the given name exists, create if it doesn't
+
+        Args:
+            project_name: Name of the project (default: "MCP-Automation")
+
+        Returns:
+            True if project exists or was created successfully, False otherwise
+        """
+        try:
+            logger.info(f"Checking if project '{project_name}' exists...")
+
+            # Ensure sidebar is open first
+            if not await self.is_sidebar_open():
+                logger.info("Opening sidebar to access projects...")
+                await self.toggle_sidebar(open=True)
+                await asyncio.sleep(1)
+
+            # First try to find the project in sidebar
+            project_link = await self._find_project_in_sidebar(project_name)
+
+            if project_link:
+                logger.info(f"Project '{project_name}' found in sidebar")
+                return True
+
+            # Project doesn't exist, create it
+            logger.info(f"Project '{project_name}' not found, creating...")
+            return await self._create_new_project(project_name)
+
+        except Exception as e:
+            logger.error(f"Error ensuring project exists: {e}")
+            return False
+
+    async def _find_project_in_sidebar(self, project_name: str):
+        """
+        Find a project link in the sidebar
+
+        Args:
+            project_name: Name of the project to find
+
+        Returns:
+            Playwright locator if found, None otherwise
+        """
+        try:
+            # Look for project in sidebar (both English and Russian)
+            # Projects are links with specific attributes: data-discover="true" and href pattern /g/g-p-
+            # This selector works in both collapsed sidebar and "See more" popup
+            project_selectors = [
+                f'a[href*="/g/g-p-"][data-discover="true"]:has-text("{project_name}")',  # Most specific - works everywhere
+                f'a[href*="/g/g-p-"]:has-text("{project_name}")',  # Fallback without data-discover
+                f'nav a:has-text("{project_name}")',  # Fallback for sidebar
+            ]
+
+            for selector in project_selectors:
+                element = self.page.locator(selector).first
+                if await element.count() > 0:
+                    return element
+
+            # If not found, look for "See more" / "Видеть больше" button and click it
+            # This shows additional projects as overlay elements (not in a dialog)
+            see_more_selectors = [
+                'text="Видеть больше"',  # Russian
+                'text="See more"',  # English
+            ]
+
+            for selector in see_more_selectors:
+                see_more_btn = self.page.locator(selector).first
+                if await see_more_btn.count() > 0:
+                    try:
+                        visible = await see_more_btn.is_visible()
+                        if visible:
+                            logger.debug(f"Found 'See more' button with {selector}, clicking to reveal more projects")
+                            await see_more_btn.click()
+                            await asyncio.sleep(1.5)
+
+                            # After clicking, sidebar may collapse - check and reopen if needed
+                            if not await self.is_sidebar_open():
+                                logger.debug("Sidebar collapsed after 'See more' click, reopening...")
+                                await self.toggle_sidebar(open=True)
+                                await asyncio.sleep(1)
+
+                            # Now search for project with the same specific selectors
+                            # Projects in popup have the same attributes as in sidebar
+                            for expanded_selector in project_selectors:
+                                element = self.page.locator(expanded_selector).first
+                                if await element.count() > 0 and await element.is_visible():
+                                    logger.debug(f"Found project after 'See more': {project_name}")
+                                    return element
+
+                            break  # Exit after clicking, don't try other selectors
+                    except Exception as e:
+                        logger.debug(f"Failed to click 'See more' button: {e}")
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Error finding project in sidebar: {e}")
+            return None
+
+    async def _create_new_project(self, project_name: str) -> bool:
+        """
+        Create a new project
+
+        Args:
+            project_name: Name of the project to create
+
+        Returns:
+            True if created successfully, False otherwise
+        """
+        try:
+            logger.info(f"Creating new project: {project_name}")
+
+            # Find "New project" button in sidebar (Russian: "Новый проект")
+            # The button is a div.__menu-item with an icon (svg)
+            # IMPORTANT: Must include :has(svg) to avoid matching the section header
+            new_project_selectors = [
+                '[class*="menu-item"]:has-text("Новый проект"):has(svg)',  # Russian with icon
+                '[class*="menu-item"]:has-text("New project"):has(svg)',  # English with icon
+                'div.__menu-item:has-text("Новый проект"):has(svg)',
+                'div.__menu-item:has-text("New project"):has(svg)',
+            ]
+
+            new_project_btn = None
+            for selector in new_project_selectors:
+                element = self.page.locator(selector).first
+                if await element.count() > 0 and await element.is_visible():
+                    new_project_btn = element
+                    logger.debug(f"Found new project button: {selector}")
+                    break
+
+            if not new_project_btn:
+                logger.error("Could not find 'New project' button")
+                return False
+
+            # Click the button (use force=True as it might be overlapped)
+            try:
+                await new_project_btn.click(force=True)
+            except Exception as click_error:
+                logger.warning(f"Force click failed, trying regular click: {click_error}")
+                try:
+                    await new_project_btn.click()
+                except Exception as e:
+                    logger.error(f"Click failed: {e}")
+                    return False
+
+            await asyncio.sleep(2)
+
+            # Look for project name input field in dialog
+            # Search within the dialog for more precision
+            name_input_selectors = [
+                '[role="dialog"] input[type="text"]',  # Most specific
+                'input[type="text"]',
+                'input[placeholder*="name"]',
+                'input[placeholder*="Name"]',
+                'input[placeholder*="название"]',
+                'input[placeholder*="Название"]',
+            ]
+
+            name_input = None
+            for selector in name_input_selectors:
+                element = self.page.locator(selector).first
+                if await element.count() > 0 and await element.is_visible():
+                    name_input = element
+                    logger.debug(f"Found name input: {selector}")
+                    break
+
+            if not name_input:
+                logger.error("Could not find project name input field")
+                return False
+
+            # Fill in the project name
+            await name_input.fill(project_name)
+            await asyncio.sleep(0.5)
+
+            # Look for Create/Save button (Russian: "Создать проект")
+            create_button_selectors = [
+                'button:has-text("Создать проект")',  # Full Russian text
+                'button:has-text("Create project")',  # Full English text
+                'button:has-text("Создать")',  # Partial Russian
+                'button:has-text("Create")',  # Partial English
+                'button:has-text("Save")',
+                'button:has-text("Сохранить")',
+                'button[type="submit"]',
+            ]
+
+            create_btn = None
+            for selector in create_button_selectors:
+                element = self.page.locator(selector).first
+                if await element.count() > 0 and await element.is_visible():
+                    create_btn = element
+                    break
+
+            if not create_btn:
+                # Try pressing Enter as fallback
+                await name_input.press("Enter")
+            else:
+                await create_btn.click()
+
+            await asyncio.sleep(2)
+
+            # Close the dialog by pressing Escape to avoid overlay issues
+            try:
+                await self.page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+                logger.debug("Closed project creation dialog")
+            except Exception as e:
+                logger.debug(f"Could not close dialog with Escape: {e}")
+
+            # Verify project was created
+            project_link = await self._find_project_in_sidebar(project_name)
+            if project_link:
+                logger.info(f"Successfully created project: {project_name}")
+                return True
+            else:
+                logger.warning(f"Project creation may have failed - cannot find '{project_name}' in sidebar")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error creating project: {e}")
+            return False
+
+    async def navigate_to_project(self, project_name: str = "MCP-Automation") -> bool:
+        """
+        Navigate to a specific project
+
+        Args:
+            project_name: Name of the project to navigate to
+
+        Returns:
+            True if navigation successful, False otherwise
+        """
+        try:
+            logger.info(f"Navigating to project: {project_name}")
+
+            # Ensure sidebar is open first
+            if not await self.is_sidebar_open():
+                logger.info("Opening sidebar to navigate to project...")
+                await self.toggle_sidebar(open=True)
+                await asyncio.sleep(1)
+
+            # Find the project link
+            project_link = await self._find_project_in_sidebar(project_name)
+
+            if not project_link:
+                logger.error(f"Cannot navigate - project '{project_name}' not found in sidebar")
+                return False
+
+            # Click the project link (use JS click to avoid overlay issues)
+            try:
+                await project_link.evaluate("element => element.click()")
+                logger.debug(f"Clicked project link with JS: {project_name}")
+            except Exception as e:
+                logger.debug(f"JS click failed, trying regular click: {e}")
+                await project_link.click()
+
+            await asyncio.sleep(2)
+
+            # Verify we're in the project (check URL or page content)
+            current_url = self.page.url
+            logger.info(f"Navigated to: {current_url}")
+
+            # Wait for the input field to be ready
+            try:
+                await self.page.wait_for_selector("#prompt-textarea", state="visible", timeout=5000)
+                logger.info(f"Successfully navigated to project: {project_name}")
+                return True
+            except:
+                logger.warning("Input field not immediately visible, but navigation may have succeeded")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error navigating to project: {e}")
+            return False
+
+    async def new_chat(self, project_name: str = "MCP-Automation") -> str:
+        """
+        Start a new chat conversation in a project with error recovery
+
+        Args:
+            project_name: Name of project to create chat in.
+                         Default: "MCP-Automation" (auto-creates if needed)
+
+        Returns:
+            Status message about new chat creation
+        """
         if not self.page:
             await self.launch()
 
         try:
-            return await self._new_chat_impl()
+            return await self._new_chat_impl(project_name=project_name)
         except Exception as e:
             # Try error recovery if available
             if self.error_recovery:
@@ -533,90 +947,39 @@ class ChatGPTBrowserController:
                 if recovery_successful:
                     # Retry the operation once after recovery
                     try:
-                        return await self._new_chat_impl()
+                        return await self._new_chat_impl(project_name=project_name)
                     except Exception as retry_error:
                         logger.error(f"New chat retry failed: {retry_error}")
                         raise retry_error
             logger.error(f"Failed to start new chat: {e}")
             raise
 
-    async def _new_chat_impl(self) -> str:
-        """Implementation of new chat logic"""
-        # Check if we're on landing page
-        current_url = self.page.url
-        
-        # If on landing page or /c/new fails, start chat by typing
-        if current_url == "https://chatgpt.com/" or "/discovery" in current_url:
-            try:
-                # Look for the "Ask anything" input field on landing page
-                ask_input = self.page.locator('input[placeholder*="Ask"]').first
-                if await ask_input.count() > 0:
-                    logger.info("Starting chat from landing page input")
-                    await ask_input.click()
-                    await ask_input.fill("Hi")
-                    await ask_input.press("Enter")
-                    await asyncio.sleep(3)
-                    return "new"
-            except Exception as e:
-                logger.debug(f"Could not use landing page input: {e}")
-        
-        # Try new chat button (but avoid /c/new which may fail)
-        new_chat_selectors = [
-            '[data-testid="create-new-chat-button"]',
-            'button:has-text("New chat")',
-            '[data-testid="new-chat-button"]',
-        ]
+    async def _new_chat_impl(self, project_name: str = "MCP-Automation") -> str:
+        """
+        Implementation of new chat logic - always creates chat in a project
 
-        clicked = False
-        for selector in new_chat_selectors:
-            try:
-                element = self.page.locator(selector).first
-                if await element.count() > 0 and await element.is_visible():
-                    await element.click(force=True)
-                    clicked = True
-                    await asyncio.sleep(2)
-                    break
-            except Exception:
-                continue
+        Args:
+            project_name: Name of project to create chat in
+        """
+        logger.info(f"Creating new chat in project: {project_name}")
 
-        if not clicked:
-            # Fallback: navigate to base and start typing
-            logger.info("Using fallback - navigating to base URL")
-            await self.page.goto("https://chatgpt.com/", wait_until="networkidle")
-            await asyncio.sleep(2)
-            
-            # Try to start a chat
-            try:
-                textarea = self.page.locator("#prompt-textarea").first
-                if await textarea.count() > 0:
-                    await textarea.click()
-                    await textarea.fill("Hello")
-                    await textarea.press("Enter")
-                    await asyncio.sleep(3)
-                    return "new"
-            except:
-                # Last resort - use Ask input
-                ask_input = self.page.locator('input[placeholder*="Ask"]').first
-                if await ask_input.count() > 0:
-                    await ask_input.click()
-                    await ask_input.fill("Hello")
-                    await ask_input.press("Enter")
-                    await asyncio.sleep(3)
-                    return "new"
+        # Ensure project exists (creates if needed)
+        project_exists = await self.ensure_project_exists(project_name)
 
-        # Wait for input to be ready (if we clicked new chat button)
-        try:
-            await self.page.wait_for_selector("#prompt-textarea", state="visible", timeout=5000)
-        except:
-            pass
-        
-        # Wait for any animations to complete
-        await self.page.wait_for_function(
-            """() => !document.querySelector('body').classList.contains('loading')""",
-            timeout=5000
-        )
-        
-        return "New chat started"
+        if not project_exists:
+            raise Exception(f"Failed to ensure project '{project_name}' exists")
+
+        # Navigate to the project
+        nav_success = await self.navigate_to_project(project_name)
+
+        if not nav_success:
+            raise Exception(f"Failed to navigate to project '{project_name}'")
+
+        # We're now in the project, the input field should be ready
+        # Just wait a moment for UI to settle
+        await asyncio.sleep(1)
+        logger.info(f"New chat started in project: {project_name}")
+        return f"New chat in project: {project_name}"
 
     async def send_message(self, message: str, enable_web_search: bool = False, enable_deep_thinking: bool = False) -> str:
         """Send a message to ChatGPT with optional web search or deep thinking
@@ -1089,23 +1452,29 @@ class ChatGPTBrowserController:
                 return True
 
         # URL-based model mapping - much more reliable than UI navigation
-        # Based on testing August 2025: ChatGPT accepts these URL parameters
+        # Based on testing November 2025: ChatGPT accepts these URL parameters
         url_model_map = {
-            # GPT-5 models (current)
+            # GPT-5.1 models (current as of Nov 2025)
+            "gpt-5.1": "gpt-5.1",
+            "5.1": "gpt-5.1",
+            "auto": "gpt-5.1",  # Default to latest
+            "5": "gpt-5.1",     # Default to latest
+
+            "gpt-5.1-thinking": "gpt-5.1-thinking",
+            "5.1-thinking": "gpt-5.1-thinking",
+            "thinking": "gpt-5.1-thinking",  # Default to latest thinking
+
+            # Legacy GPT-5 (before 5.1)
             "gpt-5": "gpt-5",
-            "5": "gpt-5",
-            "auto": "gpt-5",
-            
-            "gpt-5-thinking": "gpt-5-t",  # URL uses 't' not 'thinking'
-            "gpt-5-t": "gpt-5-t", 
-            "thinking": "gpt-5-t",
-            
-            "gpt-5-thinking-mini": "gpt-5-t-mini", 
+            "gpt-5-thinking": "gpt-5-thinking",
+            "gpt-5-t": "gpt-5-t",
+
+            "gpt-5-thinking-mini": "gpt-5-t-mini",
             "gpt-5-t-mini": "gpt-5-t-mini",
             "thinking-mini": "gpt-5-t-mini",
-            
+
             "gpt-5-pro": "gpt-5-pro",
-            "5-pro": "gpt-5-pro", 
+            "5-pro": "gpt-5-pro",
             "pro": "gpt-5-pro",
             
             # Legacy models we care about
@@ -1150,22 +1519,48 @@ class ChatGPTBrowserController:
             # Check if model changed successfully
             if model_normalized in new_model_normalized or new_model_normalized in model_normalized:
                 logger.info(f"Successfully selected model via URL: {new_model}")
+                # IMPORTANT: Navigate to project to ensure chat is created in project
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
+                return True
+            # Special handling for gpt-5 (shows as just "ChatGPT" in UI)
+            elif model.lower() in ["gpt-5", "gpt5"] and new_model.lower() == "chatgpt":
+                logger.info(f"Successfully selected base GPT-5 via URL: {new_model}")
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
                 return True
             # Special handling for shorthand names
             elif model.lower() == "5" and "gpt5" in new_model_normalized and "thinking" not in new_model_normalized and "pro" not in new_model_normalized:
                 logger.info(f"Successfully selected base GPT-5 via URL: {new_model}")
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
                 return True
             elif model.lower() == "thinking" and "thinking" in new_model_normalized:
                 logger.info(f"Successfully selected GPT-5 Thinking via URL: {new_model}")
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
                 return True
             elif model.lower() == "pro" and "pro" in new_model_normalized:
                 logger.info(f"Successfully selected GPT-5 Pro via URL: {new_model}")
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
                 return True
             elif model.lower() in ["o3"] and "o3" in new_model_normalized:
                 logger.info(f"Successfully selected o3 via URL: {new_model}")
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
                 return True
             elif model.lower() in ["4.1", "4-1", "gpt-4.1", "gpt-4-1"] and "41" in new_model_normalized:
                 logger.info(f"Successfully selected GPT-4.1 via URL: {new_model}")
+                logger.debug("Navigating to MCP-Automation project after model selection...")
+                await self.ensure_project_exists("MCP-Automation")
+                await self.navigate_to_project("MCP-Automation")
                 return True
             else:
                 logger.warning(f"URL-based model selection verification failed. Expected {model}, got {new_model}")
@@ -1189,33 +1584,32 @@ class ChatGPTBrowserController:
     async def is_sidebar_open(self) -> bool:
         """Check if the sidebar is currently open"""
         try:
-            # Multiple methods to detect sidebar state
-            
-            # Method 1: Check for close button (only visible when sidebar is open)
-            close_button = self.page.locator('[data-testid="close-sidebar-button"]').first
-            if await close_button.count() > 0 and await close_button.is_visible():
-                return True
-            
-            # Method 2: Check aria-expanded attribute
+            # Check aria-expanded attribute first
             sidebar_button = self.page.locator('[aria-controls="stage-slideover-sidebar"]').first
             if await sidebar_button.count() > 0:
                 aria_expanded = await sidebar_button.get_attribute('aria-expanded')
                 if aria_expanded == 'true':
                     return True
-            
-            # Method 3: Check if sidebar panel is visible
-            sidebar_panel = self.page.locator('[id="stage-slideover-sidebar"]').first
-            if await sidebar_panel.count() > 0:
-                # Check if it's actually visible (not hidden)
-                is_visible = await sidebar_panel.is_visible()
-                if is_visible:
-                    return True
-            
-            # Method 4: Check for sidebar nav element
-            sidebar_nav = self.page.locator('nav[aria-label="Chat history"]').first
+                elif aria_expanded == 'false':
+                    # aria-expanded can be wrong on project pages, check actual visibility and width
+                    # Sidebar can be: closed (not visible), collapsed (52px width), or open (>200px)
+                    sidebar_panel = self.page.locator('[id="stage-slideover-sidebar"]').first
+                    if await sidebar_panel.count() > 0 and await sidebar_panel.is_visible():
+                        # Check width - collapsed sidebar is ~52px, expanded is ~260px
+                        width = await sidebar_panel.evaluate("el => el.offsetWidth")
+                        if width > 100:  # Expanded sidebar
+                            logger.debug(f"Sidebar is visible and expanded (width={width}px) despite aria-expanded=false")
+                            return True
+                        else:
+                            logger.debug(f"Sidebar is visible but collapsed (width={width}px)")
+                            return False
+                    return False
+
+            # Fallback: Check for nav element with chat history (English and Russian)
+            sidebar_nav = self.page.locator('nav[aria-label="Chat history"], nav[aria-label="Журнал чата"]').first
             if await sidebar_nav.count() > 0 and await sidebar_nav.is_visible():
                 return True
-            
+
             return False
         except Exception as e:
             logger.debug(f"Error checking sidebar state: {e}")
@@ -1239,18 +1633,44 @@ class ChatGPTBrowserController:
                 return True
             
             if open:
+                # IMPORTANT: Hover over ChatGPT logo to make the open button appear
+                logger.debug("Hovering over ChatGPT logo to reveal open button")
+                logo_selectors = [
+                    'a[href="/"]',  # Logo link
+                    'header a[href="/"]',  # More specific
+                    'nav a[href="/"]',
+                ]
+
+                for logo_selector in logo_selectors:
+                    logo = self.page.locator(logo_selector).first
+                    if await logo.count() > 0:
+                        try:
+                            await logo.hover(timeout=2000)
+                            await asyncio.sleep(0.3)  # Wait for button to appear
+                            logger.debug(f"Hovered over logo: {logo_selector}")
+                            break
+                        except Exception as e:
+                            logger.debug(f"Failed to hover logo {logo_selector}: {e}")
+
                 # Look for open sidebar button - multiple possible selectors
                 open_selectors = [
-                    '[aria-label="Open sidebar"]',
-                    'button[aria-label*="sidebar"]',
-                    'button[aria-controls="stage-slideover-sidebar"]:has([aria-expanded="false"])',
-                    'header button:first-child',  # Often the first button in header
+                    'button[aria-label="Открыть боковую панель"]',  # Russian
+                    'button[aria-label="Open sidebar"]',  # English
+                    'button[aria-controls="stage-slideover-sidebar"][aria-expanded="false"]',
+                    'button[aria-label*="sidebar"][aria-expanded="false"]',
                 ]
-                
+
                 for selector in open_selectors:
                     open_button = self.page.locator(selector).first
                     if await open_button.count() > 0 and await open_button.is_visible():
-                        await open_button.click()
+                        # Use JavaScript click because sidebar overlay intercepts Playwright clicks
+                        try:
+                            await open_button.evaluate("element => element.click()")
+                            logger.debug(f"Clicked open sidebar button with JS: {selector}")
+                        except Exception as e:
+                            logger.debug(f"JS click failed, trying force click: {e}")
+                            await open_button.click(force=True)
+
                         await asyncio.sleep(get_delay("sidebar_animation"))  # Wait for animation
                         
                         # Force a reflow to ensure icons render properly
@@ -1428,11 +1848,12 @@ class ChatGPTBrowserController:
 
     async def enable_deep_research(self) -> bool:
         """Enable Deep Research mode via attachment menu
-        
-        Deep Research is available as a menu item in the attachment/tools menu.
-        
+
+        Deep Research is available as a menu item in the attachment/tools menu (+ button).
+        Supports both English ("Deep research") and Russian ("Глубокое исследование") UI.
+
         Note: Deep Research has a monthly quota (250/month)
-        
+
         Returns:
             True if Deep Research was enabled, False otherwise
         """
@@ -1440,12 +1861,14 @@ class ChatGPTBrowserController:
             await self.launch()
 
         try:
-            # Click the attachment/paperclip button
+            # Click the attachment/plus button
             attachment_selectors = [
+                'button:has-text("+")',                         # Plus button (current UI)
                 '.composer-btn:not([aria-label*="Dictate"])',  # First composer button (not voice)
                 '.composer-btn:not([aria-label*="voice"])',     # Exclude voice button
                 'button[aria-label="Attach files"]',            # Legacy selector
                 'button:has(svg.icon-paperclip)',               # Legacy selector
+                'button:has(svg):near(#prompt-textarea)',       # Button with icon near textarea
             ]
             
             attachment_button = None
@@ -1464,11 +1887,16 @@ class ChatGPTBrowserController:
             
             # Look for "Deep research" option directly in the menu
             # It's visible in the main menu, not in "More"
+            # Support both English and Russian (Глубокое исследование)
             research_selectors = [
-                'text="Deep research"',  # Exact text match
+                'text="Deep research"',  # English exact match
+                'text="Глубокое исследование"',  # Russian exact match
                 'div:text-is("Deep research")',
+                'div:text-is("Глубокое исследование")',
                 'button:has-text("Deep research")',
-                '*:has-text("Deep research")',  # Any element with this text
+                'button:has-text("Глубокое исследование")',
+                '*:has-text("Deep research")',  # Any element with English text
+                '*:has-text("Глубокое исследование")',  # Any element with Russian text
             ]
             
             for selector in research_selectors:
@@ -1656,8 +2084,9 @@ class ChatGPTBrowserController:
             last_article = articles[-1]
             text = await last_article.inner_text()
             
-            # Verify it's an assistant message
-            if "You said:" in text:
+            # Verify it's an assistant message (language-agnostic check)
+            # User messages don't contain "ChatGPT" prefix, assistant messages do
+            if "ChatGPT" not in text:
                 logger.warning("Last message is from user, cannot regenerate")
                 return False
             
@@ -1978,7 +2407,9 @@ class ChatGPTBrowserController:
                 if await list_element.count() > 0:
                     # Find individual conversation items
                     item_selectors = [
-                        'a[href^="/c/"]',  # Conversation links
+                        'a[href*="/c/"]',  # Conversation links (both /c/ and /g/g-p-*/c/*)
+                        'a[href^="/c/"]',  # Direct conversation links (non-project)
+                        'a[href^="/g/g-p-"]',  # Project conversation links
                         '[data-testid^="history-item-"]',  # New pattern with test IDs
                         '[data-testid="conversation-item"]',
                         'div[role="button"]',
@@ -2007,6 +2438,32 @@ class ChatGPTBrowserController:
 
                     if conversations:
                         break
+
+            # Fallback: try searching directly in nav element without specific container
+            if not conversations:
+                logger.debug("Trying fallback: searching directly in nav for conversation links")
+                nav = self.page.locator('nav').first
+                if await nav.count() > 0:
+                    # Try to find conversation links directly
+                    for item_sel in ['a[href*="/c/"]', 'a[href^="/g/g-p-"]']:
+                        items = nav.locator(item_sel)
+                        count = await items.count()
+                        if count > 0:
+                            logger.debug(f"Found {count} items with fallback selector: {item_sel}")
+                            for i in range(count):
+                                item = items.nth(i)
+                                try:
+                                    text = await item.text_content()
+                                    if text and text.strip():
+                                        href = await item.get_attribute("href")
+                                        conv_id = href.split("/")[-1] if href else f"conv_{i}"
+                                        conversations.append(
+                                            {"id": conv_id, "title": text.strip(), "index": i}
+                                        )
+                                except Exception:
+                                    continue
+                            if conversations:
+                                break
 
             logger.info(f"Found {len(conversations)} conversations")
             return conversations
@@ -2174,11 +2631,13 @@ class ChatGPTBrowserController:
             # Get all articles (messages)
             articles = await self.page.locator('main article').all()
             
-            # Filter for user messages
+            # Filter for user messages (language-agnostic check)
+            # User messages don't contain "ChatGPT" prefix, assistant messages do
             user_articles = []
             for article in articles:
                 text = await article.inner_text()
-                if "You said:" in text or text.startswith("You said:"):
+                # User messages don't have "ChatGPT" in them
+                if "ChatGPT" not in text:
                     user_articles.append(article)
             
             if not user_articles:

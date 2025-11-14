@@ -54,11 +54,20 @@ async def test_deep_research_visual_verification(browser):
         await asyncio.sleep(2.0)  # Wait for menu animation
         await browser.screenshot("03_menu_opened")
         
-        # Look for Deep Research in menu
+        # Look for Deep Research in menu (both English and Russian)
         print("\nStep 4: Looking for 'Deep research' in menu...")
-        deep_research = browser.controller.page.locator('text="Deep research"').first
-        
-        if await deep_research.count() > 0:
+        deep_research_en = browser.controller.page.locator('text="Deep research"').first
+        deep_research_ru = browser.controller.page.locator('text="Глубокое исследование"').first
+
+        deep_research = None
+        if await deep_research_en.count() > 0:
+            deep_research = deep_research_en
+            print("✅ Found 'Deep research' (English)")
+        elif await deep_research_ru.count() > 0:
+            deep_research = deep_research_ru
+            print("✅ Found 'Глубокое исследование' (Russian)")
+
+        if deep_research:
             print("✅ Found 'Deep research' option!")
             
             # Highlight it visually if possible
@@ -129,9 +138,10 @@ async def test_deep_research_visual_verification(browser):
                 await more_button.click()
                 await asyncio.sleep(1.0)
                 await browser.screenshot("ERROR_more_menu")
-                
-                deep_in_more = await browser.controller.page.locator('text="Deep research"').count()
-                if deep_in_more > 0:
+
+                deep_in_more_en = await browser.controller.page.locator('text="Deep research"').count()
+                deep_in_more_ru = await browser.controller.page.locator('text="Глубокое исследование"').count()
+                if deep_in_more_en > 0 or deep_in_more_ru > 0:
                     print("⚠️  Found in 'More' submenu - implementation needs update!")
                 else:
                     print("❌ Not in 'More' submenu either")

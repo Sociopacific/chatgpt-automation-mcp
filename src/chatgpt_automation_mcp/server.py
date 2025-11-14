@@ -73,6 +73,9 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Model to select",
                         "enum": [
+                            "gpt-5.1",
+                            "5.1",
+                            "gpt-5.1-thinking",
                             "gpt-5",
                             "5",
                             "gpt-5-thinking",

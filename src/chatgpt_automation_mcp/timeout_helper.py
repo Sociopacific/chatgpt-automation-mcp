@@ -7,28 +7,32 @@ def get_default_timeout(model: str = None, mode: str = None, operation: str = "r
     Get appropriate timeout based on model, mode, and operation type
     
     Args:
-        model: The model name (e.g., "gpt-5", "gpt-5-thinking", "gpt-5-pro")
+        model: The model name (e.g., "gpt-5.1", "gpt-5.1-thinking", "gpt-5-pro")
         mode: The mode (e.g., "deep_research", "web_search")
         operation: The operation type (e.g., "response", "thinking")
-    
+
     Returns:
         Timeout in seconds
     """
     # Deep Research mode: Real data shows up to 6 hours worst case
     if mode and "deep_research" in mode.lower():
         return 21600  # 6 hours (users report 2-6 hour waits, we need to cover worst case!)
-    
+
     # Model-specific timeouts
     if model:
         model_lower = model.lower()
-        
-        # GPT-5 family
+
+        # GPT-5.1 family (current as of Nov 2025)
         if "gpt-5-pro" in model_lower or "gpt 5 pro" in model_lower:
             return 1800  # 30 minutes (Pro models need extensive time)
-        elif "gpt-5-thinking" in model_lower or "gpt 5 thinking" in model_lower:
+        elif "gpt-5.1-thinking" in model_lower or "gpt 5.1 thinking" in model_lower:
             return 900  # 15 minutes (Thinking models need time for reasoning)
-        elif "gpt-5" in model_lower or "gpt 5" in model_lower or model_lower == "5":
+        elif "gpt-5-thinking" in model_lower or "gpt 5 thinking" in model_lower:
+            return 900  # 15 minutes (Legacy thinking model)
+        elif "gpt-5.1" in model_lower or "gpt 5.1" in model_lower or model_lower == "5.1":
             return 300  # 5 minutes (Standard model, good balance)
+        elif "gpt-5" in model_lower or "gpt 5" in model_lower or model_lower == "5":
+            return 300  # 5 minutes (Legacy GPT-5)
         
         # o-series reasoning models
         elif "o3-pro" in model_lower or "o3 pro" in model_lower:

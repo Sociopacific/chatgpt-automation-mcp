@@ -258,10 +258,16 @@ async def test_find_deep_research_location(browser):
         await asyncio.sleep(1.0)
         await browser.screenshot("02_attachment_menu")
         
-        # Look for Deep Research
-        deep_research = await browser.controller.page.locator('text=/deep.*research/i').count()
+        # Look for Deep Research (English and Russian)
+        deep_research_en = await browser.controller.page.locator('text=/deep.*research/i').count()
+        deep_research_ru = await browser.controller.page.locator('text="Глубокое исследование"').count()
+        deep_research = deep_research_en + deep_research_ru
         print(f"Deep Research in attachment menu: {deep_research > 0}")
-        
+        if deep_research_en > 0:
+            print(f"  - Found English: 'Deep research'")
+        if deep_research_ru > 0:
+            print(f"  - Found Russian: 'Глубокое исследование'")
+
         # Also check for just "Research"
         research = await browser.controller.page.locator('text="Research"').count()
         print(f"'Research' in attachment menu: {research > 0}")
@@ -278,7 +284,7 @@ async def test_find_deep_research_location(browser):
         print(f"  Button {i}: '{text}'")
     
     # Strategy 3: Check if it appears after sending a research query
-    await browser.controller.page.fill('textarea[placeholder*="Message"]', "Research the latest developments in quantum computing")
+    await browser.controller.page.fill('#prompt-textarea', "Research the latest developments in quantum computing")
     await browser.screenshot("03_research_query_typed")
     
     # Check if any research options appeared

@@ -47,13 +47,12 @@ async def test_fix_deep_research_implementation(browser):
     await browser.controller.page.goto("https://chatgpt.com/?model=gpt-5-pro")
     await browser.wait_for_stable_ui()
     
-    # Find the correct textarea selector
+    # Find the correct textarea selector (prioritize known working selectors)
     textarea_selectors = [
+        '#prompt-textarea',  # Primary - confirmed working
+        'div[contenteditable="true"]',  # Alternative
+        'textarea',  # Fallback
         'textarea[data-testid="composer-input"]',
-        'textarea[placeholder*="Message"]',
-        'textarea[placeholder*="message"]',
-        'textarea#prompt-textarea',
-        'div[contenteditable="true"]',
     ]
     
     textarea = None
