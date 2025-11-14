@@ -131,17 +131,18 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_wait_response",
-            description="Wait for ChatGPT to finish responding",
+            description="Wait for ChatGPT to finish responding in a specific chat",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to wait for response in"},
                     "timeout": {
                         "type": "integer",
                         "description": "Maximum time to wait in seconds",
                         "default": 30,
                     }
                 },
-                "required": [],
+                "required": ["chat_id"],
             },
         ),
         Tool(
@@ -163,46 +164,61 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="chatgpt_get_conversation",
-            description="Get all messages in the current conversation",
-            inputSchema={"type": "object", "properties": {}, "required": []},
-        ),
-        Tool(
-            name="chatgpt_get_last_response",
-            description="Get the last response from ChatGPT",
+            description="Get all messages in a specific conversation",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to get conversation from"}
+                },
+                "required": ["chat_id"],
+            },
+        ),
+        Tool(
+            name="chatgpt_get_last_response",
+            description="Get the last response from ChatGPT in a specific chat",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to get response from"},
                     "timeout": {
                         "type": "integer",
                         "description": "Maximum time to wait if still responding",
                         "default": 10,
                     }
                 },
-                "required": [],
+                "required": ["chat_id"],
             },
         ),
         Tool(
             name="chatgpt_upload_file",
-            description="Upload a file to the current conversation",
+            description="Upload a file to a specific conversation",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to upload file to"},
                     "file_path": {"type": "string", "description": "Path to the file to upload"}
                 },
-                "required": ["file_path"],
+                "required": ["chat_id", "file_path"],
             },
         ),
         Tool(
             name="chatgpt_regenerate",
-            description="Regenerate the last response from ChatGPT",
-            inputSchema={"type": "object", "properties": {}, "required": []},
-        ),
-        Tool(
-            name="chatgpt_export_conversation",
-            description="Export the current conversation in markdown or JSON format",
+            description="Regenerate the last response from ChatGPT in a specific chat",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to regenerate response in"}
+                },
+                "required": ["chat_id"],
+            },
+        ),
+        Tool(
+            name="chatgpt_export_conversation",
+            description="Export a specific conversation in markdown or JSON format",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to export"},
                     "format": {
                         "type": "string",
                         "description": "Export format",
@@ -210,15 +226,16 @@ async def list_tools() -> list[Tool]:
                         "default": "markdown",
                     }
                 },
-                "required": [],
+                "required": ["chat_id"],
             },
         ),
         Tool(
             name="chatgpt_save_conversation",
-            description="Export and save the current conversation to a file",
+            description="Export and save a specific conversation to a file",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to save"},
                     "filename": {
                         "type": "string",
                         "description": "Custom filename (without extension). Auto-generated if not provided.",
@@ -230,15 +247,16 @@ async def list_tools() -> list[Tool]:
                         "default": "markdown",
                     },
                 },
-                "required": [],
+                "required": ["chat_id"],
             },
         ),
         Tool(
             name="chatgpt_edit_message",
-            description="Edit a previous user message in the conversation",
+            description="Edit a previous user message in a specific conversation",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "chat_id": {"type": "string", "description": "REQUIRED: The chat ID to edit message in"},
                     "message_index": {
                         "type": "integer",
                         "description": "Index of the user message to edit (0-based)",
@@ -248,7 +266,7 @@ async def list_tools() -> list[Tool]:
                         "description": "New content for the message",
                     },
                 },
-                "required": ["message_index", "new_content"],
+                "required": ["chat_id", "message_index", "new_content"],
             },
         ),
         Tool(
@@ -262,12 +280,12 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "conversation_id": {
-                        "type": ["string", "integer"],
-                        "description": "Conversation ID or index to switch to",
+                    "chat_id": {
+                        "type": "string",
+                        "description": "Chat ID to switch to",
                     }
                 },
-                "required": ["conversation_id"],
+                "required": ["chat_id"],
             },
         ),
         Tool(
@@ -276,12 +294,12 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "conversation_id": {
-                        "type": ["string", "integer"],
-                        "description": "Conversation ID or index to delete",
+                    "chat_id": {
+                        "type": "string",
+                        "description": "Chat ID to delete",
                     }
                 },
-                "required": ["conversation_id"],
+                "required": ["chat_id"],
             },
         ),
         Tool(
@@ -421,7 +439,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "chatgpt_wait_response":
+            chat_id = arguments["chat_id"]
             timeout = arguments.get("timeout", 30)
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
+
             success = await ctrl.wait_for_response(timeout)
             status = "response complete" if success else "timeout waiting for response"
             return [TextContent(type="text", text=status)]
@@ -454,12 +479,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text="No response received")]
 
         elif name == "chatgpt_get_conversation":
+            chat_id = arguments["chat_id"]
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
+
             conversation = await ctrl.get_conversation()
 
             return [TextContent(type="text", text=json.dumps(conversation, indent=2))]
 
         elif name == "chatgpt_get_last_response":
+            chat_id = arguments["chat_id"]
             timeout = arguments.get("timeout", 10)
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
 
             # Wait a bit if still responding
             await ctrl.wait_for_response(timeout)
@@ -472,7 +510,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text="No response found")]
 
         elif name == "chatgpt_upload_file":
+            chat_id = arguments["chat_id"]
             file_path = arguments["file_path"]
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
+
             success = await ctrl.upload_file(file_path)
 
             if success:
@@ -481,6 +526,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text=f"Failed to upload file: {file_path}")]
 
         elif name == "chatgpt_regenerate":
+            chat_id = arguments["chat_id"]
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
+
             success = await ctrl.regenerate_response()
 
             if success:
@@ -489,7 +541,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text="Failed to regenerate response")]
 
         elif name == "chatgpt_export_conversation":
+            chat_id = arguments["chat_id"]
             format = arguments.get("format", "markdown")
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
+
             content = await ctrl.export_conversation(format)
 
             if content:
@@ -498,8 +557,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text="Failed to export conversation")]
 
         elif name == "chatgpt_save_conversation":
+            chat_id = arguments["chat_id"]
             filename = arguments.get("filename")
             format = arguments.get("format", "markdown")
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
 
             file_path = await ctrl.save_conversation(filename, format)
 
@@ -509,8 +574,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text="Failed to save conversation")]
 
         elif name == "chatgpt_edit_message":
+            chat_id = arguments["chat_id"]
             message_index = arguments["message_index"]
             new_content = arguments["new_content"]
+
+            # Navigate to the chat first
+            nav_success = await ctrl.navigate_to_chat(chat_id)
+            if not nav_success:
+                return [TextContent(type="text", text=f"Failed to navigate to chat {chat_id}")]
 
             success = await ctrl.edit_message(message_index, new_content)
 
@@ -530,32 +601,32 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return [TextContent(type="text", text="No conversations found")]
 
         elif name == "chatgpt_switch_conversation":
-            conversation_id = arguments["conversation_id"]
+            chat_id = arguments["chat_id"]
 
-            success = await ctrl.switch_conversation(conversation_id)
+            success = await ctrl.navigate_to_chat(chat_id)
 
             if success:
                 return [
-                    TextContent(type="text", text=f"Switched to conversation: {conversation_id}")
+                    TextContent(type="text", text=f"Switched to chat: {chat_id}")
                 ]
             else:
                 return [
                     TextContent(
-                        type="text", text=f"Failed to switch to conversation: {conversation_id}"
+                        type="text", text=f"Failed to switch to chat: {chat_id}"
                     )
                 ]
 
         elif name == "chatgpt_delete_conversation":
-            conversation_id = arguments["conversation_id"]
+            chat_id = arguments["chat_id"]
 
-            success = await ctrl.delete_conversation(conversation_id)
+            success = await ctrl.delete_conversation(chat_id)
 
             if success:
-                return [TextContent(type="text", text=f"Deleted conversation: {conversation_id}")]
+                return [TextContent(type="text", text=f"Deleted chat: {chat_id}")]
             else:
                 return [
                     TextContent(
-                        type="text", text=f"Failed to delete conversation: {conversation_id}"
+                        type="text", text=f"Failed to delete chat: {chat_id}"
                     )
                 ]
 
