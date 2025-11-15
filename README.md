@@ -1,20 +1,17 @@
 # ChatGPT Automation MCP
 
-OUT OF DATE
-
 A Model Context Protocol (MCP) server for automating ChatGPT web interface using Playwright. Provides programmatic control over ChatGPT conversations including model selection, message sending, and response retrieval.
 
 ## Features
 
-- 🌐 **Browser Automation**: Controls ChatGPT web interface via Playwright (Note: Browser MCP recommended for testing)
-- 🤖 **Model Selection**: Switch between GPT-5, GPT-5 Thinking, GPT-5 Pro, and legacy models (o3, o4-mini, GPT-4.5, etc.)
-- 💬 **Conversation Management**: New chats, send messages, get responses
-- 🔄 **Session Persistence**: Maintain login state across sessions
-- 🛡️ **Secure Configuration**: Environment-based configuration with .env support
+- 🌐 **Browser Automation**: Controls ChatGPT web interface via Playwright
+- 🤖 **Model Selection**: Switch between GPT-5.1, GPT-5.1 Instant, GPT-5.1 Thinking, and legacy models (o3, o4-mini, GPT-4.5, etc.)
+- 💬 **Chat Management**: Create chats, send messages, get responses with explicit chat ID safety
+- 🔄 **Session Persistence**: Maintain login state across sessions using Chrome profiles
+- 🛡️ **Chat ID Safety**: All operations require explicit chat ID to prevent cross-chat contamination
 - 🔍 **Auto Web Search**: Automatically enables web search for research-related queries
-- 🔄 **Response Regeneration**: Regenerate ChatGPT responses through UI automation
-- 📤 **Export Conversations**: Save chats in various formats
-- 🔧 **Comprehensive Error Recovery**: Automatic handling of network errors, timeouts, browser crashes, and session expiration
+- 📤 **Export Chats**: Save chats in markdown or JSON format
+- 🔧 **Comprehensive Error Recovery**: Automatic handling of network errors, timeouts, browser crashes
 - ⚡ **Batch Operations**: Execute multiple operations in sequence for efficiency
 
 ## Installation
@@ -36,7 +33,14 @@ uv run playwright install chromium
 
 ### Browser Configuration
 
-The MCP uses direct Playwright browser automation (no longer requires Chrome debugging setup). Browser sessions maintain login state across runs using Playwright's storage state feature.
+The MCP uses Chrome with a separate automation profile via Chrome DevTools Protocol (CDP). This allows:
+- Maintaining ChatGPT login across sessions
+- Browser automation without interfering with your personal Chrome instance
+- Automatic profile creation from your default Chrome profile
+
+**Profile Location**: `~/Library/Application Support/Google/Chrome-Automation` (macOS)
+
+If you encounter issues, simply delete the automation profile - it will be recreated automatically.
 
 ## Configuration
 
@@ -80,45 +84,93 @@ Add to your Claude desktop configuration:
 
 ### Available Tools
 
+#### Core Operations
 - `chatgpt_launch` - Launch ChatGPT in browser
-- `chatgpt_new_chat` - Start a new conversation
-- `chatgpt_send_message` - Send a message
-- `chatgpt_send_and_get_response` - Send message and wait for response (auto-enables web search for research keywords)
-- `chatgpt_get_last_response` - Get the most recent response
-- `chatgpt_get_conversation` - Get full conversation history
-- `chatgpt_select_model` - Switch to a different model (gpt-5, gpt-5-thinking, gpt-5-pro)
-- `chatgpt_get_model` - Check current model
 - `chatgpt_status` - Check if ChatGPT is ready
-- `chatgpt_wait_response` - Wait for response completion
+- `chatgpt_get_model` - Check current model
+- `chatgpt_select_model` - Switch to a different model (gpt-5.1, gpt-5.1-instant, gpt-5.1-thinking, etc.)
+
+#### Chat Management (require chat_id)
+- `chatgpt_new_chat` - **Start a new chat** (returns chat_id + first response)
+- `chatgpt_send_message` - Send a message to a specific chat
+- `chatgpt_send_and_get_response` - Send message and wait for response (auto-enables web search)
+- `chatgpt_wait_response` - Wait for response completion in a specific chat
+- `chatgpt_get_last_response` - Get the most recent response from a specific chat
+- `chatgpt_get_chat` - Get full chat history
+- `chatgpt_upload_file` - Upload a file to a specific chat
+- `chatgpt_edit_message` - Edit a previous user message in a specific chat
+
+#### Export & Organization
+- `chatgpt_export_chat` - Export chat as markdown or JSON
+- `chatgpt_save_chat` - Save chat to file
+- `chatgpt_list_chats` - List all available chats
+- `chatgpt_delete_chat` - Delete a chat
+
+#### Advanced Features
 - `chatgpt_enable_think_longer` - Enable Think Longer mode for enhanced reasoning
-- `chatgpt_enable_deep_research` - Enable Deep Research mode for comprehensive web research (250/month quota)
-- `chatgpt_upload_file` - Upload a file to the conversation
-- `chatgpt_regenerate` - Regenerate the last response
-- `chatgpt_export_conversation` - Export conversation as markdown or JSON
-- `chatgpt_save_conversation` - Save conversation to file
-- `chatgpt_edit_message` - Edit a previous user message
-- `chatgpt_list_conversations` - List all available conversations
-- `chatgpt_switch_conversation` - Switch to a different conversation
-- `chatgpt_delete_conversation` - Delete a conversation
+- `chatgpt_enable_deep_research` - Enable Deep Research mode (250/month quota)
 - `chatgpt_batch_operations` - Execute multiple operations in sequence
+
+### Chat ID Safety
+
+**IMPORTANT**: All chat operations now require explicit `chat_id` parameter. This prevents AI agents from accidentally sending messages to the wrong chat.
+
+**Workflow**:
+1. Create a new chat with `chatgpt_new_chat` → get `chat_id`
+2. Use that `chat_id` for all subsequent operations
+
+```python
+# Create a new chat
+result = await chatgpt_new_chat(message="Hello!")
+# Returns: "Chat ID: 12345-67890-abcdef\n\nResponse: Hi there!"
+
+# Extract chat_id
+chat_id = "12345-67890-abcdef"
+
+# Use chat_id for all operations
+await chatgpt_send_message(
+    message="What's 2+2?",
+    chat_id=chat_id
+)
+
+response = await chatgpt_get_last_response(chat_id=chat_id)
+```
 
 ### Example Usage
 
 ```python
-# Basic conversation flow
+# Basic conversation flow with chat ID safety
 await chatgpt_launch()
-await chatgpt_new_chat()
-await chatgpt_select_model(model="gpt-5")
-response = await chatgpt_send_and_get_response(
+await chatgpt_select_model(model="gpt-5.1-instant")
+
+# Create new chat and get chat_id
+result = await chatgpt_new_chat(
     message="Explain quantum computing",
-    timeout=300  # GPT-5 thinking time
+    project_name="MCP-Automation"
 )
-print(response)
+# Returns: "Chat ID: abc123...\n\nResponse: Quantum computing is..."
+
+# Extract chat_id from result
+chat_id = "abc123..."  # Parse from result
+
+# Send follow-up message
+response = await chatgpt_send_and_get_response(
+    message="How does quantum entanglement work?",
+    chat_id=chat_id,
+    timeout=120
+)
+
+# Export the chat
+await chatgpt_export_chat(
+    chat_id=chat_id,
+    format="markdown"
+)
 
 # Enhanced reasoning with Think Longer
 await chatgpt_enable_think_longer()
 response = await chatgpt_send_and_get_response(
     message="Solve this complex logic puzzle...",
+    chat_id=chat_id,
     timeout=600  # Extended timeout for thinking
 )
 
@@ -126,21 +178,25 @@ response = await chatgpt_send_and_get_response(
 await chatgpt_enable_deep_research()
 response = await chatgpt_send_and_get_response(
     message="Research the history and impact of quantum computing",
+    chat_id=chat_id,
     timeout=3600  # Deep research can take up to an hour
 )
 
 # Batch operations for efficiency
 batch_result = await chatgpt_batch_operations(operations=[
-    {"operation": "new_chat"},
-    {"operation": "select_model", "args": {"model": "gpt-5-thinking"}},
+    {"operation": "new_chat", "args": {"message": "Start analysis"}},
+    {"operation": "select_model", "args": {"model": "gpt-5.1-thinking"}},
     {"operation": "enable_think_longer"},
     {"operation": "send_and_get_response", "args": {
         "message": "Analyze this complex problem step by step",
+        "chat_id": chat_id,
         "timeout": 900
     }},
-    {"operation": "save_conversation", "args": {"filename": "analysis"}},
+    {"operation": "save_chat", "args": {
+        "chat_id": chat_id,
+        "filename": "analysis"
+    }},
 ])
-print(f"Batch completed: {batch_result['successful_operations']}/{batch_result['total_operations']} operations successful")
 ```
 
 ## Smart Features
@@ -158,54 +214,48 @@ The `chatgpt_send_and_get_response` tool automatically enables web search when y
 ```python
 # This will automatically enable web search
 response = await chatgpt_send_and_get_response(
-    message="What are the latest Odoo 18 performance improvements?"
+    message="What are the latest developments in AI?",
+    chat_id=chat_id
 )
 
 # This will not trigger auto-enable
 response = await chatgpt_send_and_get_response(
-    message="Write a Python function to sort a list"
+    message="Write a Python function to sort a list",
+    chat_id=chat_id
 )
 ```
 
-**How it works:** When research keywords are detected, the tool adds "(Please search the web for this)" to your message, triggering ChatGPT's web search capability. This approach is more reliable than trying to navigate ChatGPT's frequently changing UI.
-
-## Available Models (August 2025)
-
-### Model Selection Method
-**IMPORTANT**: Model selection now uses URL-based approach for reliability:
-```python
-# Direct URL navigation (much more reliable than UI navigation)
-https://chatgpt.com/?model=gpt-5
-https://chatgpt.com/?model=gpt-5-thinking
-https://chatgpt.com/?model=gpt-5-pro
-https://chatgpt.com/?model=o3
-https://chatgpt.com/?model=gpt-4-1  # Note: dash not dot
-```
+## Available Models (November 2025)
 
 ### Current Models
 
+#### GPT-5.1 Family (Latest)
+- **gpt-5.1** / **5.1** - Latest flagship model
+- **gpt-5.1-instant** / **instant** - Fast responses
+- **gpt-5.1-thinking** / **thinking** - Extended reasoning (15 min timeout)
+- **auto** - Automatically choose best model
+
 #### GPT-5 Family
-- **GPT-5** - Flagship model, excellent for most tasks (5 minute timeout)
-- **GPT-5 Thinking** - Get more thorough answers with extended reasoning (15 minute timeout)
-- **GPT-5 Pro** - Research-grade intelligence for most advanced tasks (30 minute timeout)
+- **gpt-5** / **5** - Previous flagship model
+- **gpt-5-instant** - Fast responses
+- **gpt-5-thinking** - Extended reasoning
+- **gpt-5-t-mini** / **thinking-mini** - Lightweight reasoning
+- **gpt-5-pro** - Research-grade intelligence (30 min timeout)
 
-### Legacy Models (We Care About)
-
-#### Key Legacy Models
-- **GPT-4.1** - Large context window, great for long documents (use `gpt-4-1` in URL)
-- **o3** - Advanced reasoning model (10 minute timeout)
-
-#### Other Available (Less Important)
-- **GPT-4o** - Legacy model, superseded by GPT-5
-- **GPT-4.5** - Good for writing and exploring ideas
-- **o3-pro** - Legacy reasoning expert (15 minute timeout)
+#### Legacy Models
+- **o3** - Advanced reasoning model (60+ min timeout)
+- **o3-pro** - Expert reasoning (can take hours)
+- **o4-mini** - Lightweight model
+- **gpt-4.5** - Previous generation
+- **gpt-4.1** / **4.1** / **4-1** - Large context window
+- **gpt-4.1-mini** - Lightweight GPT-4
+- **gpt-4o** / **4o** - Multimodal model
 
 ### Model Selection Tips
-- **Default choice**: `gpt-5` for most development and creative tasks
-- **Complex reasoning**: `gpt-5-thinking` or `o3` for deep analysis
-- **Critical research**: `gpt-5-pro` for the most sophisticated reasoning
-- **Large context**: `gpt-4.1` for documents exceeding standard limits
-- **Quick access**: Use `5` as shorthand for `gpt-5`, `thinking` for `gpt-5-thinking`
+- **Default choice**: `gpt-5.1-instant` for fast responses
+- **Complex reasoning**: `gpt-5.1-thinking` or `o3` for deep analysis
+- **Critical research**: `gpt-5-pro` or `o3-pro` for sophisticated reasoning
+- **Quick access**: Use shortcuts like `instant`, `thinking`, `auto`
 
 ## Development
 
@@ -236,7 +286,7 @@ uv run python tests/test_functional.py
 # Or use the test runner script
 uv run run-tests --unit        # Unit tests only
 uv run run-tests --integration # Integration tests (requires browser)
-uv run run-tests --auto-enable # Auto-enable web search tests (fast, no browser needed)
+uv run run-tests --auto-enable # Auto-enable web search tests
 uv run run-tests --all         # All tests
 uv run run-tests --coverage    # With coverage report
 ```
@@ -246,9 +296,11 @@ uv run run-tests --coverage    # With coverage report
 - `tests/test_browser_controller.py` - Unit tests with mocked browser
 - `tests/test_integration.py` - Integration tests with real browser
 - `tests/test_functional.py` - Quick smoke test for basic functionality
-- `tests/test_auto_enable_search.py` - Auto-enable web search keyword detection tests
-- `tests/test_server_auto_enable.py` - Server integration tests for auto-enable feature
-- `tests/test_web_search_verification.py` - Visual verification tests with screenshots
+- `tests/test_auto_enable_search.py` - Auto-enable web search keyword detection
+- `tests/test_server_auto_enable.py` - Server integration tests
+- `tests/test_web_search_verification.py` - Visual verification with screenshots
+- `tests/test_deep_research_verification.py` - Deep Research feature verification
+- `tests/test_think_longer_verification.py` - Think Longer feature verification
 - `run_tests.py` - Test runner with various options
 
 ### Code Quality
@@ -267,16 +319,15 @@ uv run ruff check . --fix
 ### Development Best Practices
 
 See [docs/DEVELOPMENT_BEST_PRACTICES.md](docs/DEVELOPMENT_BEST_PRACTICES.md) for important lessons learned about:
-- **URL-based model selection** (breakthrough discovery!)
-- Visual verification testing with screenshots (use Browser MCP)
+- Using Playwright methods (`get_by_role`, `get_by_test_id`) instead of `locator()`
+- Visual verification testing with screenshots
 - Handling ChatGPT UI changes
-- Selector best practices
+- Chrome profile management and troubleshooting
 - Common pitfalls and debugging tips
-- TDD approach for fixing broken features
 
 ## Error Handling & Recovery
 
-The MCP server includes comprehensive error handling and automatic recovery for common issues:
+The MCP server includes comprehensive error handling and automatic recovery:
 
 ### Automatic Recovery Scenarios
 - **Network Errors**: Automatic retry with exponential backoff
@@ -284,14 +335,12 @@ The MCP server includes comprehensive error handling and automatic recovery for 
 - **Session Expiration**: Automatic re-authentication when needed
 - **Element Not Found**: Page refresh and element waiting
 - **Timeout Errors**: Extended waiting and page responsiveness checks
-- **Rate Limiting**: Intelligent waiting with exponential backoff
 
 ### Error Types Handled
 - Connection failures and network instability
 - ChatGPT UI changes and element location issues
 - Browser crashes and unexpected closures
 - Authentication token expiration
-- Rate limiting from excessive requests
 - Page loading timeouts and delays
 
 ### Recovery Strategies
@@ -301,64 +350,70 @@ The MCP server includes comprehensive error handling and automatic recovery for 
 - **Context Preservation**: Maintain conversation state during recovery
 - **Graceful Degradation**: Continue operation even with partial failures
 
-## Known Issues (August 2025)
-
-### Currently Broken Features
-- **Think Longer Mode**: ❌ UI location changed, needs investigation
-- **Deep Research Mode**: ❌ UI location changed, needs investigation  
-- **Some MCP tools**: ⚠️ Integration issues between direct calls and MCP wrapper
-
-See [@NEXT_PROMPT.md](@NEXT_PROMPT.md) for detailed status and fix instructions.
-
 ## Troubleshooting
 
-### Browser Session Issues
+### Chrome Profile Issues
 
-**Problem**: "Not logged in to ChatGPT"
-- Login once in the browser window when it opens
-- Session state will be saved automatically
-- Future runs will maintain the login state
+**Problem**: Chrome opens folder listing instead of ChatGPT
+- **Cause**: Automation profile is corrupted or command line args are wrong
+- **Fix**: Delete the automation profile
+  ```bash
+  rm -rf ~/Library/Application\ Support/Google/Chrome-Automation
+  ```
+  The MCP will recreate it automatically from your default Chrome profile.
+
+**Problem**: "Not logged in to ChatGPT" after profile recreation
+- **Expected behavior**: First run with new profile requires login
+- Login to ChatGPT in the automation browser once
+- Session will persist for all future runs
+
+### Browser Session Issues
 
 **Problem**: Browser won't launch
 - Ensure Playwright Chromium is installed: `uv run playwright install chromium`
 - Try with `HEADLESS=false` to see the browser window
-- Restart the MCP server
-
-### Login Issues
-- Credentials in `.env` are optional (session state maintains login)
-- Try with `HEADLESS=false` to debug visually
-- Session state is stored in the temp/sessions directory
+- Check Chrome is installed and working
+- Delete automation profile and let it recreate
 
 ### Response Detection
 - The tool waits for ChatGPT's thinking animation to complete
-- Increase timeout for complex queries or reasoning models (GPT-5 Pro can take 30+ minutes!)
+- Increase timeout for complex queries or reasoning models
+  - GPT-5.1 Thinking: 15+ minutes
+  - GPT-5 Pro: 30+ minutes
+  - o3: 60+ minutes
+  - o3-pro: Can take hours
 - Enable debug mode with `CHATGPT_LOG_LEVEL=DEBUG`
 
 ### Model Selection
 - Not all models may be available to your account
-- GPT-5 Thinking and GPT-5 Pro may require ChatGPT subscription
+- Some models require ChatGPT Plus/Pro subscription
 - Model names are case-sensitive
-- GPT-5 Thinking and GPT-5 Pro are in the "Other models" menu
+- Use shortcuts when available: `instant`, `thinking`, `auto`
+
+### Chat ID Issues
+- **Error**: "Failed to navigate to chat {chat_id}"
+  - Check the chat_id is valid (from `chatgpt_new_chat` or `chatgpt_list_chats`)
+  - Chat may have been deleted
+  - Use `chatgpt_list_chats` to see available chats
 
 ### Auto-Enable Web Search Issues
 - Feature only works with `chatgpt_send_and_get_response` tool
 - Check message contains research keywords: `latest`, `current`, `research`, etc.
 - Web search may already be enabled (not an error)
 
-
 ### Error Recovery
 - Error recovery is automatic and logged at INFO level
 - Set `CHATGPT_LOG_LEVEL=DEBUG` for detailed recovery information
 - Recovery attempts are limited to prevent infinite loops
 - Browser restart is the ultimate fallback for persistent issues
-- **Browser session reset** by deleting temp/sessions files is effective for persistent login issues
 
 ## Security
 
 - Credentials are stored in `.env` (never commit this file)
-- Browser sessions are isolated in temp directories
+- Browser sessions are isolated in separate Chrome profile
 - Screenshots on error are stored locally only
 - All temporary files are gitignored
+- Chat IDs are required to prevent cross-chat access
 
 ## Contributing
 
